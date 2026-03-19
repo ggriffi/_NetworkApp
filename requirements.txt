@@ -1,0 +1,11 @@
+# NetProbe — required
+# Python 3.8+ stdlib covers most functionality
+
+# Optional but highly recommended:
+scapy>=2.5.0          # Full packet capture (L2-L6) + ARP scanning
+dnspython>=2.3.0      # Full DNS record type support (A/AAAA/MX/NS/TXT/CNAME/SOA)
+psutil>=5.9.0         # Network interface enumeration
+
+# To install:
+# pip install scapy dnspython psutil
+# Linux may also need: sudo pip install scapy
