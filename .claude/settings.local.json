@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python _append_panels.py)",
+      "Bash(python -m py_compile ui/panels.py)",
+      "Bash(python -m py_compile ui/app.py)",
+      "Bash(python -m py_compile core/engine.py)",
+      "Bash(python _append_netstat.py)",
+      "Bash(python -c \":*)"
+    ]
+  }
+}

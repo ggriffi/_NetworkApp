@@ -3,11 +3,19 @@ from .engine import (
     MTRMonitor, MTRRow,
     traceroute, HopResult,
     port_scan, PortResult, COMMON_PORTS,
-    dns_lookup, DNSResult,
+    udp_port_scan,
+    dns_lookup, DNSResult, doh_lookup,
     arp_scan, ping_sweep, get_local_interfaces, ARPEntry,
     BandwidthServer, BandwidthClient,
     IPerf3Client, find_iperf3,
     PacketCapture, PacketInfo,
     ExternalMonitor,
-    asn_lookup, asn_lookup_batch
+    asn_lookup, asn_lookup_batch,
+    GeoIPResult, geoip_lookup, geoip_lookup_batch,
+    SSLInfo, ssl_inspect,
+    HTTPResult, http_probe,
+    whois_lookup,
+    wake_on_lan,
+    NetstatEntry, netstat_snapshot,
 )
+

@@ -1539,3 +1539,570 @@ def asn_lookup_batch(ips: List[str], callback: Callable = None) -> Dict[str, str
 
     return results
 
+
+# ─────────────────────────────────────────────
+# GeoIP Lookup  (ip-api.com — free, no key)
+# ─────────────────────────────────────────────
+
+@dataclass
+class GeoIPResult:
+    ip: str
+    country: str = ''
+    country_code: str = ''
+    city: str = ''
+    region: str = ''
+    org: str = ''
+    lat: float = 0.0
+    lon: float = 0.0
+    error: str = ''
+
+    def short(self) -> str:
+        """Compact display string for table cells."""
+        if self.error or not self.country_code:
+            return ''
+        parts = [self.country_code]
+        if self.city:
+            parts.append(self.city)
+        return ', '.join(parts)
+
+
+_geoip_cache: Dict[str, GeoIPResult] = {}
+_geoip_lock = threading.Lock()
+
+
+def geoip_lookup(ip: str) -> GeoIPResult:
+    """GeoIP lookup via ip-api.com (free tier). Results cached per session."""
+    with _geoip_lock:
+        if ip in _geoip_cache:
+            return _geoip_cache[ip]
+
+    result = GeoIPResult(ip=ip)
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            result.country = 'Private'
+            with _geoip_lock:
+                _geoip_cache[ip] = result
+            return result
+    except ValueError:
+        result.error = 'Invalid IP'
+        return result
+
+    try:
+        import urllib.request
+        import json as _json
+        url = (f'http://ip-api.com/json/{ip}'
+               f'?fields=country,countryCode,city,regionName,org,lat,lon,status,message')
+        req = urllib.request.Request(url, headers={'User-Agent': 'NetProbe/1.1'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read().decode())
+        if data.get('status') == 'success':
+            result.country      = data.get('country', '')
+            result.country_code = data.get('countryCode', '')
+            result.city         = data.get('city', '')
+            result.region       = data.get('regionName', '')
+            result.org          = data.get('org', '')
+            result.lat          = float(data.get('lat', 0))
+            result.lon          = float(data.get('lon', 0))
+        else:
+            result.error = data.get('message', 'lookup failed')
+    except Exception as e:
+        result.error = str(e)
+
+    with _geoip_lock:
+        _geoip_cache[ip] = result
+    return result
+
+
+def geoip_lookup_batch(ips: List[str], callback: Callable = None) -> Dict[str, GeoIPResult]:
+    """Concurrent GeoIP lookups. Calls callback(ip, GeoIPResult) as each completes."""
+    results: Dict[str, GeoIPResult] = {}
+    lock = threading.Lock()
+
+    def _one(ip):
+        geo = geoip_lookup(ip)
+        with lock:
+            results[ip] = geo
+        if callback:
+            callback(ip, geo)
+
+    threads = [threading.Thread(target=_one, args=(ip,), daemon=True)
+               for ip in ips if ip and ip != '*']
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=6)
+    return results
+
+
+# ─────────────────────────────────────────────
+# SSL / TLS Inspector
+# ─────────────────────────────────────────────
+
+@dataclass
+class SSLInfo:
+    host: str
+    port: int
+    subject_cn: str = ''
+    subject: str = ''
+    issuer: str = ''
+    version: str = ''
+    cipher: str = ''
+    not_before: str = ''
+    not_after: str = ''
+    san: List[str] = field(default_factory=list)
+    days_remaining: int = 0
+    expired: bool = False
+    verified: bool = False
+    error: str = ''
+
+
+def _extract_cert_dict(cert: dict, info: SSLInfo):
+    """Parse ssl.getpeercert() decoded dict into SSLInfo fields."""
+    for field_list in cert.get('subject', []):
+        for key, val in field_list:
+            if key == 'commonName':
+                info.subject_cn = val
+    info.subject = '; '.join(
+        f'{k}={v}' for fl in cert.get('subject', []) for k, v in fl)
+    info.issuer = '; '.join(
+        f'{k}={v}' for fl in cert.get('issuer', []) for k, v in fl)
+    info.not_before = cert.get('notBefore', '')
+    info.not_after  = cert.get('notAfter', '')
+    if info.not_after:
+        try:
+            from datetime import datetime as _dt
+            expire = _dt.strptime(info.not_after, '%b %d %H:%M:%S %Y %Z')
+            info.days_remaining = (expire - _dt.utcnow()).days
+            info.expired = info.days_remaining < 0
+        except Exception:
+            pass
+    info.san = [v for t, v in cert.get('subjectAltName', []) if t == 'DNS']
+
+
+def _parse_der_cert(der: bytes, info: SSLInfo):
+    """Extract cert fields from raw DER bytes — tries cryptography lib, then openssl CLI."""
+    try:
+        from cryptography import x509 as _cx509
+        from cryptography.hazmat.backends import default_backend as _backend
+        import datetime as _dmod
+        cert = _cx509.load_der_x509_certificate(der, _backend())
+        cn_attrs = cert.subject.get_attributes_for_oid(_cx509.NameOID.COMMON_NAME)
+        info.subject_cn = cn_attrs[0].value if cn_attrs else ''
+        info.subject    = cert.subject.rfc4514_string()
+        info.issuer     = cert.issuer.rfc4514_string()
+        try:
+            nb = cert.not_valid_before_utc
+            na = cert.not_valid_after_utc
+        except AttributeError:
+            nb = cert.not_valid_before.replace(tzinfo=_dmod.timezone.utc)
+            na = cert.not_valid_after.replace(tzinfo=_dmod.timezone.utc)
+        info.not_before = str(nb)
+        info.not_after  = str(na)
+        now = _dmod.datetime.now(_dmod.timezone.utc)
+        info.days_remaining = (na - now).days
+        info.expired = info.days_remaining < 0
+        try:
+            san_ext = cert.extensions.get_extension_for_class(_cx509.SubjectAlternativeName)
+            info.san = san_ext.value.get_values_for_type(_cx509.DNSName)
+        except Exception:
+            pass
+        return
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback: openssl subprocess
+    try:
+        import ssl as _ssl_mod
+        import re as _re
+        pem = _ssl_mod.DER_cert_to_PEM_cert(der)
+        res = subprocess.run(['openssl', 'x509', '-text', '-noout'],
+                             input=pem, capture_output=True, text=True, timeout=5)
+        out = res.stdout
+        m = _re.search(r'Subject:.*?CN\s*=\s*([^\n,/]+)', out)
+        if m:
+            info.subject_cn = m.group(1).strip()
+        m = _re.search(r'Issuer:.*?O\s*=\s*([^\n,/]+)', out)
+        if m:
+            info.issuer = m.group(1).strip()
+        m = _re.search(r'Not Before\s*:\s*([^\n]+)', out)
+        if m:
+            info.not_before = m.group(1).strip()
+        m = _re.search(r'Not After\s*:\s*([^\n]+)', out)
+        if m:
+            info.not_after = m.group(1).strip()
+            try:
+                from datetime import datetime as _dt
+                expire = _dt.strptime(info.not_after.strip(), '%b %d %H:%M:%S %Y %Z')
+                info.days_remaining = (expire - _dt.utcnow()).days
+                info.expired = info.days_remaining < 0
+            except Exception:
+                pass
+        dns_names = _re.findall(r'DNS:([^\s,]+)', out)
+        if dns_names:
+            info.san = dns_names
+    except Exception:
+        pass
+
+
+def ssl_inspect(host: str, port: int = 443, timeout: float = 10.0) -> SSLInfo:
+    """Inspect SSL/TLS certificate and connection parameters for host:port."""
+    import ssl as _ssl
+    info = SSLInfo(host=host, port=port)
+    try:
+        # Step 1 — unverified connect: get cipher/version + raw DER cert
+        ctx_bare = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx_bare.check_hostname = False
+        ctx_bare.verify_mode = _ssl.CERT_NONE
+        der = None
+        with socket.create_connection((host, port), timeout=timeout) as raw:
+            with ctx_bare.wrap_socket(raw, server_hostname=host) as s:
+                info.version = s.version() or ''
+                c = s.cipher()
+                info.cipher = f'{c[0]} / {c[1]}' if c else ''
+                der = s.getpeercert(binary_form=True)
+
+        # Step 2 — verified connect: get decoded cert dict
+        try:
+            ctx_v = _ssl.create_default_context()
+            with socket.create_connection((host, port), timeout=timeout) as raw:
+                with ctx_v.wrap_socket(raw, server_hostname=host) as s:
+                    _extract_cert_dict(s.getpeercert(), info)
+                    info.verified = True
+        except _ssl.SSLCertVerificationError as e:
+            info.error = f'Verification failed: {e.reason}'
+            if der:
+                _parse_der_cert(der, info)
+        except Exception:
+            if der:
+                _parse_der_cert(der, info)
+
+    except Exception as e:
+        info.error = str(e)
+    return info
+
+
+# ─────────────────────────────────────────────
+# HTTP Probe
+# ─────────────────────────────────────────────
+
+@dataclass
+class HTTPResult:
+    url: str
+    final_url: str = ''
+    status_code: int = 0
+    status_text: str = ''
+    ttfb_ms: float = 0.0
+    total_ms: float = 0.0
+    redirect_chain: List[str] = field(default_factory=list)
+    headers: Dict[str, str] = field(default_factory=dict)
+    content_length: int = 0
+    server: str = ''
+    content_type: str = ''
+    error: str = ''
+
+
+def http_probe(url: str, method: str = 'GET', follow_redirects: bool = True,
+               timeout: float = 10.0) -> HTTPResult:
+    """Probe an HTTP/HTTPS URL — returns timing, status, headers, redirect chain."""
+    import urllib.request
+    import urllib.error
+
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    result = HTTPResult(url=url)
+    redirect_chain: List[str] = []
+    t_start = time.perf_counter()
+
+    try:
+        class _RedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                redirect_chain.append(f'{code} → {newurl}')
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        opener = urllib.request.build_opener(
+            _RedirectHandler if follow_redirects else urllib.request.BaseHandler)
+        req = urllib.request.Request(
+            url, method=method, headers={'User-Agent': 'NetProbe/1.1'})
+
+        with opener.open(req, timeout=timeout) as resp:
+            result.ttfb_ms      = round((time.perf_counter() - t_start) * 1000, 2)
+            result.status_code  = resp.status
+            result.status_text  = resp.reason or ''
+            result.final_url    = resp.url or url
+            result.redirect_chain = redirect_chain
+            hdrs                = dict(resp.headers)
+            result.headers      = hdrs
+            result.server       = hdrs.get('Server', hdrs.get('server', ''))
+            result.content_type = hdrs.get('Content-Type', hdrs.get('content-type', ''))
+            cl = hdrs.get('Content-Length', hdrs.get('content-length', ''))
+            if cl:
+                try:
+                    result.content_length = int(cl)
+                except ValueError:
+                    pass
+            resp.read(4096)  # consume body (limited)
+
+    except urllib.error.HTTPError as e:
+        result.status_code = e.code
+        result.status_text = e.reason or ''
+        result.ttfb_ms     = round((time.perf_counter() - t_start) * 1000, 2)
+        result.headers     = dict(e.headers) if e.headers else {}
+        result.server      = result.headers.get('Server', '')
+    except Exception as e:
+        result.error = str(e)
+
+    result.total_ms = round((time.perf_counter() - t_start) * 1000, 2)
+    if not result.ttfb_ms:
+        result.ttfb_ms = result.total_ms
+    return result
+
+
+# ─────────────────────────────────────────────
+# WHOIS Lookup  (raw socket port 43)
+# ─────────────────────────────────────────────
+
+_WHOIS_TLDS: Dict[str, str] = {
+    '.com': 'whois.verisign-grs.com', '.net': 'whois.verisign-grs.com',
+    '.org': 'whois.pir.org',          '.edu': 'whois.educause.edu',
+    '.gov': 'whois.dotgov.gov',       '.io':  'whois.iana.org',
+    '.co':  'whois.iana.org',         '.uk':  'whois.nic.uk',
+    '.de':  'whois.denic.de',         '.fr':  'whois.nic.fr',
+    '.au':  'whois.auda.org.au',      '.ca':  'whois.cira.ca',
+    '.jp':  'whois.jprs.jp',
+}
+
+
+def _whois_query(server: str, query: str, timeout: float = 10.0) -> str:
+    try:
+        with socket.create_connection((server, 43), timeout=timeout) as s:
+            s.sendall(f'{query}\r\n'.encode())
+            chunks = []
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk.decode('utf-8', errors='replace'))
+            return ''.join(chunks)
+    except Exception as e:
+        return f'; Error querying {server}: {e}\n'
+
+
+def whois_lookup(target: str) -> str:
+    """Return raw WHOIS text for a domain or IP. Auto-selects the right server."""
+    import re as _re
+    target = target.strip()
+    is_ip = False
+    try:
+        ipaddress.ip_address(target)
+        is_ip = True
+    except ValueError:
+        pass
+
+    if is_ip:
+        text = _whois_query('whois.iana.org', target)
+        for line in text.split('\n'):
+            if line.lower().startswith('refer:'):
+                server = line.split(':', 1)[1].strip()
+                if server:
+                    detail = _whois_query(server, target)
+                    return detail + '\n\n;; --- IANA referral ---\n' + text
+        return text
+    else:
+        parts = target.lower().split('.')
+        tld = ('.' + parts[-1]) if len(parts) > 1 else ''
+        server = _WHOIS_TLDS.get(tld, 'whois.iana.org')
+        text = _whois_query(server, target)
+        # Follow registrar WHOIS referral if present
+        for line in text.split('\n'):
+            if _re.match(r'(?i)(registrar\s+)?whois\s+server:', line):
+                ref = line.split(':', 1)[1].strip().lower()
+                if ref and ref != server and '.' in ref:
+                    detail = _whois_query(ref, target)
+                    return detail + f'\n\n;; --- {server} response ---\n' + text
+        return text
+
+
+# ─────────────────────────────────────────────
+# Wake-on-LAN
+# ─────────────────────────────────────────────
+
+def wake_on_lan(mac: str, broadcast: str = '255.255.255.255', port: int = 9) -> bool:
+    """Send a WoL magic packet (6×0xFF + target MAC×16) via UDP broadcast."""
+    clean = mac.upper().replace(':', '').replace('-', '').replace('.', '')
+    if len(clean) != 12 or not all(c in '0123456789ABCDEF' for c in clean):
+        raise ValueError(f'Invalid MAC address: {mac}')
+    magic = b'\xFF' * 6 + bytes.fromhex(clean) * 16
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.sendto(magic, (broadcast, port))
+    return True
+
+
+# ─────────────────────────────────────────────
+# UDP Port Probe  (basic — open|filtered or closed)
+# ─────────────────────────────────────────────
+
+def udp_port_scan(host: str, ports: List[int], timeout: float = 1.5,
+                  callback: Callable = None) -> List[PortResult]:
+    """
+    Basic UDP port scan. Without raw-socket ICMP access the best we can say
+    is 'open|filtered' (no response) or 'closed' (ICMP unreachable received).
+    """
+    results: List[PortResult] = []
+    try:
+        ip = socket.gethostbyname(host)
+    except Exception:
+        ip = host
+
+    for port in ports:
+        t0 = time.perf_counter()
+        state = 'open|filtered'
+        try:
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.settimeout(timeout)
+            udp.sendto(b'\x00' * 4, (ip, port))
+            try:
+                udp.recv(512)
+                state = 'open'
+            except socket.timeout:
+                state = 'open|filtered'
+            except ConnectionResetError:
+                state = 'closed'
+            finally:
+                udp.close()
+        except Exception:
+            state = 'unknown'
+        rtt = (time.perf_counter() - t0) * 1000
+        r = PortResult(host=ip, port=port, state=state,
+                       service=COMMON_PORTS.get(port, ''), rtt_ms=round(rtt, 2))
+        results.append(r)
+        if callback:
+            callback(r)
+    return results
+
+
+# ─────────────────────────────────────────────
+# DNS-over-HTTPS comparison
+# ─────────────────────────────────────────────
+
+def doh_lookup(domain: str, record_type: str = 'A') -> Dict:
+    """
+    Query Google DoH and Cloudflare DoH for a domain/record type.
+    Returns {'google': [...answers], 'cloudflare': [...answers], 'error': str}
+    """
+    import urllib.request
+    import json as _json
+
+    result: Dict = {'google': [], 'cloudflare': [], 'error': ''}
+
+    def _query(url: str):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={'accept': 'application/dns-json',
+                         'User-Agent': 'NetProbe/1.1'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode())
+            return [a['data'] for a in data.get('Answer', [])]
+        except Exception as e:
+            return [f'Error: {e}']
+
+    g_url  = f'https://dns.google/resolve?name={domain}&type={record_type}'
+    cf_url = (f'https://cloudflare-dns.com/dns-query'
+              f'?name={domain}&type={record_type}')
+
+    result['google']      = _query(g_url)
+    result['cloudflare']  = _query(cf_url)
+    return result
+
+
+
+# ─────────────────────────────────────────────────────────────────
+# Netstat snapshot
+# ─────────────────────────────────────────────────────────────────
+
+@dataclass
+class NetstatEntry:
+    proto:       str = ''
+    local_addr:  str = ''
+    local_port:  int = 0
+    remote_addr: str = ''
+    remote_port: int = 0
+    state:       str = ''
+    pid:         int = 0
+    process:     str = ''
+
+
+def _netstat_subprocess() -> List['NetstatEntry']:
+    """Fallback: parse netstat -an output."""
+    import subprocess, re
+    entries: List[NetstatEntry] = []
+    try:
+        out = subprocess.check_output(
+            ['netstat', '-ano'], text=True,
+            stderr=subprocess.DEVNULL, timeout=10)
+        for line in out.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            proto = parts[0].upper()
+            if proto not in ('TCP', 'UDP', 'TCP6', 'UDP6'):
+                continue
+            def _split(s: str):
+                if s.startswith('['):
+                    m = re.match(r'\[(.+)\]:(\d+)$', s)
+                    return (m.group(1), int(m.group(2))) if m else (s, 0)
+                if ':' in s:
+                    h, p = s.rsplit(':', 1)
+                    return h, int(p) if p.isdigit() else 0
+                return s, 0
+            la, lp = _split(parts[1]) if len(parts) > 1 else ('', 0)
+            if proto.startswith('TCP') and len(parts) >= 4:
+                ra, rp = _split(parts[2])
+                state = parts[3]
+                pid   = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            else:
+                ra, rp, state = '', 0, ''
+                pid = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+            entries.append(NetstatEntry(
+                proto=proto, local_addr=la, local_port=lp,
+                remote_addr=ra, remote_port=rp, state=state, pid=pid))
+    except Exception:
+        pass
+    return entries
+
+
+def netstat_snapshot() -> List[NetstatEntry]:
+    """Return current network connections; uses psutil if available."""
+    import socket as _socket
+    try:
+        import psutil
+        _PROTO = {
+            (_socket.AF_INET,  _socket.SOCK_STREAM): 'TCP',
+            (_socket.AF_INET6, _socket.SOCK_STREAM): 'TCP6',
+            (_socket.AF_INET,  _socket.SOCK_DGRAM):  'UDP',
+            (_socket.AF_INET6, _socket.SOCK_DGRAM):  'UDP6',
+        }
+        entries: List[NetstatEntry] = []
+        for conn in psutil.net_connections(kind='all'):
+            proc = ''
+            if conn.pid:
+                try:
+                    proc = psutil.Process(conn.pid).name()
+                except Exception:
+                    pass
+            proto = _PROTO.get((conn.family, conn.type), 'OTHER')
+            la = conn.laddr.ip   if conn.laddr else ''
+            lp = conn.laddr.port if conn.laddr else 0
+            ra = conn.raddr.ip   if conn.raddr else ''
+            rp = conn.raddr.port if conn.raddr else 0
+            entries.append(NetstatEntry(
+                proto=proto, local_addr=la, local_port=lp,
+                remote_addr=ra, remote_port=rp,
+                state=conn.status or '', pid=conn.pid or 0, process=proc))
+        return entries
+    except ImportError:
+        return _netstat_subprocess()

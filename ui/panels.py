@@ -12,11 +12,27 @@ import socket
 from .theme import *
 from .widgets import (CardFrame, LabeledEntry, ScrolledText,
                       DarkTreeview, MiniGraph, run_in_thread)
-from core import (PingMonitor, MTRMonitor, traceroute, port_scan,
-                  dns_lookup, arp_scan, ping_sweep, get_local_interfaces,
+from core import (PingMonitor, MTRMonitor, traceroute, port_scan, udp_port_scan,
+                  dns_lookup, doh_lookup, arp_scan, ping_sweep, get_local_interfaces,
                   BandwidthServer, BandwidthClient, IPerf3Client, find_iperf3,
                   PacketCapture, ExternalMonitor, COMMON_PORTS,
-                  asn_lookup, asn_lookup_batch)
+                  asn_lookup, asn_lookup_batch,
+                  GeoIPResult, geoip_lookup, geoip_lookup_batch,
+                  SSLInfo, ssl_inspect, HTTPResult, http_probe,
+                  whois_lookup, wake_on_lan)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Cross-tab navigation helper
+# ─────────────────────────────────────────────────────────────────
+
+def _get_app():
+    """Return the running NetProbeApp instance (set in app.py __init__)."""
+    try:
+        from ui.app import _app_instance
+        return _app_instance
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -93,8 +109,15 @@ class PingPanel(tk.Frame):
         tk.Entry(ifrm, textvariable=self._interval_var, width=5,
                  **ENTRY_OPTS).pack(side='left', padx=4, ipady=3)
 
+        # Loss alert threshold
+        alert_frm = tk.Frame(ctrl, bg=BG_PANEL)
+        tk.Label(alert_frm, text='Alert loss%>', **LABEL_OPTS).pack(side='left')
+        self._alert_loss_var = tk.StringVar(value='')
+        tk.Entry(alert_frm, textvariable=self._alert_loss_var, width=4,
+                 **ENTRY_OPTS).pack(side='left', padx=2, ipady=3)
+
         self._tbar = TargetBar(ctrl, label='Host/IP', default='8.8.8.8',
-                               extra_widgets=[ifrm],
+                               extra_widgets=[ifrm, alert_frm],
                                on_start=self._start, on_stop=self._stop)
         self._tbar.pack(side='left')
 
@@ -103,7 +126,8 @@ class PingPanel(tk.Frame):
         stats_row.pack(fill='x', padx=8, pady=2)
         self._stat_vars = {}
         for key, label in [('sent','SENT'),('recv','RECV'),('loss','LOSS%'),
-                            ('min','MIN ms'),('avg','AVG ms'),('max','MAX ms'),('last','LAST ms')]:
+                            ('min','MIN ms'),('avg','AVG ms'),('max','MAX ms'),
+                            ('last','LAST ms'),('jitter','JITTER ms')]:
             frm = tk.Frame(stats_row, bg=BG_CARD,
                            highlightthickness=1, highlightbackground=BORDER_DIM,
                            padx=10, pady=6)
@@ -181,9 +205,23 @@ class PingPanel(tk.Frame):
         self._stat_vars['loss'].set(f'{loss:.1f}%')
         if valid:
             self._stat_vars['min'].set(f'{min(x.rtt_ms for x in valid):.1f}')
-            self._stat_vars['avg'].set(f'{sum(x.rtt_ms for x in valid)/len(valid):.1f}')
+            avg_rtt = sum(x.rtt_ms for x in valid) / len(valid)
+            self._stat_vars['avg'].set(f'{avg_rtt:.1f}')
             self._stat_vars['max'].set(f'{max(x.rtt_ms for x in valid):.1f}')
             self._stat_vars['last'].set(f'{r.rtt_ms:.1f}' if r.rtt_ms >= 0 else 'T/O')
+            if len(valid) > 1:
+                jitter = (sum((x.rtt_ms - avg_rtt)**2 for x in valid) / len(valid)) ** 0.5
+                self._stat_vars['jitter'].set(f'{jitter:.1f}')
+
+        # Loss alert
+        try:
+            alert_thresh = float(self._alert_loss_var.get())
+            if loss >= alert_thresh:
+                self._log.append(
+                    f'  ⚠ ALERT: loss {loss:.1f}% exceeds threshold {alert_thresh:.0f}%\n',
+                    'timeout')
+        except (ValueError, AttributeError):
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -216,9 +254,9 @@ class TraceroutePanel(tk.Frame):
         card = CardFrame(self, title='HOP TABLE')
         card.pack(fill='both', expand=True, padx=8, pady=8)
 
-        cols = ('hop', 'ip', 'hostname', 'rtt1', 'rtt2', 'rtt3', 'loss', 'asn')
-        hdrs = ('HOP', 'IP ADDRESS', 'HOSTNAME', 'RTT 1', 'RTT 2', 'RTT 3', 'LOSS%', 'ASN / CARRIER')
-        widths = (45, 120, 200, 80, 80, 80, 60, 200)
+        cols = ('hop', 'ip', 'hostname', 'rtt1', 'rtt2', 'rtt3', 'loss', 'asn', 'geo')
+        hdrs = ('HOP', 'IP ADDRESS', 'HOSTNAME', 'RTT 1', 'RTT 2', 'RTT 3', 'LOSS%', 'ASN / CARRIER', 'GEO')
+        widths = (45, 120, 180, 75, 75, 75, 55, 180, 130)
         self._tree = DarkTreeview(card.body, cols, hdrs, widths)
         self._tree.pack(fill='both', expand=True, padx=4, pady=4)
 
@@ -251,7 +289,7 @@ class TraceroutePanel(tk.Frame):
         self._thread.start()
 
     def _resolve_asns(self):
-        """Look up ASN for all hop IPs and update the tree"""
+        """Look up ASN + GeoIP for all hop IPs and update the tree."""
         ips = {ip: iid for ip, iid in self._hop_ips.items() if ip and ip != '*'}
         if not ips:
             return
@@ -264,13 +302,31 @@ class TraceroutePanel(tk.Frame):
                 except Exception:
                     pass
 
+        def on_geo(ip, geo):
+            iid = ips.get(ip)
+            if iid:
+                try:
+                    self._tree.tree.after(0, self._update_geo_cell, iid, geo.short())
+                except Exception:
+                    pass
+
         asn_lookup_batch(list(ips.keys()), callback=on_asn)
+        geoip_lookup_batch(list(ips.keys()), callback=on_geo)
 
     def _update_asn_cell(self, iid, asn):
         try:
             vals = list(self._tree.tree.item(iid)['values'])
             if len(vals) >= 8:
                 vals[7] = asn
+                self._tree.tree.item(iid, values=vals)
+        except Exception:
+            pass
+
+    def _update_geo_cell(self, iid, geo_str):
+        try:
+            vals = list(self._tree.tree.item(iid)['values'])
+            if len(vals) >= 9:
+                vals[8] = geo_str
                 self._tree.tree.item(iid, values=vals)
         except Exception:
             pass
@@ -299,11 +355,11 @@ class TraceroutePanel(tk.Frame):
             tag = 'timeout'
 
         values = (hop.hop, hop.ip, hop.hostname[:40],
-                  rtts[0], rtts[1], rtts[2], f'{hop.loss_pct:.0f}%', '…')
+                  rtts[0], rtts[1], rtts[2], f'{hop.loss_pct:.0f}%', '…', '…')
         iid = self._tree.tree.insert('', 'end', values=values, tags=(tag,))
         self._tree.tree.see(iid)
 
-        # Store for ASN resolution
+        # Store for ASN + GeoIP resolution
         if hop.ip and hop.ip != '*':
             self._hop_ips[hop.ip] = iid
 
@@ -341,9 +397,9 @@ class MTRPanel(tk.Frame):
         card = CardFrame(self, title='MTR — LIVE HOP STATISTICS')
         card.pack(fill='both', expand=True, padx=8, pady=8)
 
-        cols = ('hop','ip','hostname','loss','sent','last','avg','best','worst','stdev','asn')
-        hdrs = ('HOP','IP ADDRESS','HOSTNAME','LOSS%','SENT','LAST ms','AVG ms','BEST ms','WORST ms','STDEV','ASN / CARRIER')
-        widths = (40, 115, 180, 55, 50, 70, 70, 70, 70, 65, 180)
+        cols = ('hop','ip','hostname','loss','sent','last','avg','best','worst','stdev','asn','geo')
+        hdrs = ('HOP','IP ADDRESS','HOSTNAME','LOSS%','SENT','LAST ms','AVG ms','BEST ms','WORST ms','STDEV','ASN / CARRIER','GEO')
+        widths = (40, 115, 165, 55, 50, 65, 65, 65, 65, 60, 165, 120)
         self._tree = DarkTreeview(card.body, cols, hdrs, widths)
         self._tree.pack(fill='both', expand=True, padx=4, pady=4)
 
@@ -361,6 +417,7 @@ class MTRPanel(tk.Frame):
         except:
             interval = 1.0
         self._mtr_asn_cache = {}  # ip -> asn string
+        self._mtr_geo_cache = {}  # ip -> geo short string
         self._mtr = MTRMonitor(host, interval=interval)
         self._mtr.start()
         self._schedule_update()
@@ -382,19 +439,19 @@ class MTRPanel(tk.Frame):
         rows = self._mtr.get_rows()
         self._tree.clear()
 
-        # Collect IPs needing ASN lookup
+        # Collect IPs needing ASN / GeoIP lookup
         needs_lookup = []
         for row in rows:
             if row.ip and row.ip != '*' and row.ip not in self._mtr_asn_cache:
                 needs_lookup.append(row.ip)
-                self._mtr_asn_cache[row.ip] = '…'  # placeholder
+                self._mtr_asn_cache[row.ip] = '…'
+                self._mtr_geo_cache[row.ip] = '…'
 
-        # Fire background lookups for new IPs
         if needs_lookup:
             def do_lookup(ips):
                 for ip in ips:
-                    asn = asn_lookup(ip)
-                    self._mtr_asn_cache[ip] = asn
+                    self._mtr_asn_cache[ip] = asn_lookup(ip)
+                    self._mtr_geo_cache[ip] = geoip_lookup(ip).short()
             threading.Thread(target=do_lookup, args=(needs_lookup,), daemon=True).start()
 
         for row in rows:
@@ -403,15 +460,16 @@ class MTRPanel(tk.Frame):
             elif row.ip == '*': tag = 'dim'
             else: tag = 'ok'
             asn = self._mtr_asn_cache.get(row.ip, '') if row.ip != '*' else ''
+            geo = self._mtr_geo_cache.get(row.ip, '') if row.ip != '*' else ''
             values = (
-                row.hop, row.ip, row.hostname[:30],
+                row.hop, row.ip, row.hostname[:28],
                 f'{row.loss_pct:.1f}%', row.sent,
                 f'{row.last_ms:.1f}' if row.last_ms else '—',
                 f'{row.avg_ms:.1f}'  if row.avg_ms else '—',
                 f'{row.best_ms:.1f}' if row.best_ms < 999999 else '—',
                 f'{row.worst_ms:.1f}' if row.worst_ms else '—',
                 f'{row.stdev_ms:.1f}' if row.stdev_ms else '—',
-                asn,
+                asn, geo,
             )
             self._tree.tree.insert('', 'end', values=values, tags=(tag,))
 
@@ -687,6 +745,15 @@ class PortScanPanel(tk.Frame):
         tk.Entry(ctrl, textvariable=self._timeout_var, width=5,
                  **ENTRY_OPTS).pack(side='left', padx=2, ipady=3)
 
+        self._proto_var = tk.StringVar(value='TCP')
+        proto_frm2 = tk.Frame(ctrl, bg=BG_PANEL)
+        tk.Label(proto_frm2, text='Proto', **LABEL_OPTS).pack(side='left')
+        for p in ['TCP', 'UDP']:
+            tk.Radiobutton(proto_frm2, text=p, variable=self._proto_var, value=p,
+                           bg=BG_PANEL, fg=FG_PRIMARY, selectcolor=BG_INPUT,
+                           activebackground=BG_PANEL, font=FONT_UI_SM).pack(side='left', padx=2)
+        proto_frm2.pack(side='left', padx=(8, 4))
+
         self._scan_btn = tk.Button(ctrl, text='▶  SCAN', **BUTTON_GREEN_OPTS,
                                    command=self._toggle_scan)
         self._scan_btn.pack(side='left', padx=8)
@@ -723,9 +790,26 @@ class PortScanPanel(tk.Frame):
         self._tree = DarkTreeview(card.body, cols, hdrs, widths)
         self._tree.pack(fill='both', expand=True, padx=4, pady=4)
 
-        self._tree.tree.tag_configure('open',     foreground=ACCENT_GREEN)
-        self._tree.tree.tag_configure('closed',   foreground=FG_DIM)
-        self._tree.tree.tag_configure('filtered', foreground=ACCENT_YELLOW)
+        self._tree.tree.tag_configure('open',         foreground=ACCENT_GREEN)
+        self._tree.tree.tag_configure('closed',       foreground=FG_DIM)
+        self._tree.tree.tag_configure('filtered',     foreground=ACCENT_YELLOW)
+        self._tree.tree.tag_configure('open|filtered',foreground=ACCENT_CYAN)
+
+        # Right-click context menu
+        ctx_menu = tk.Menu(self._tree.tree, tearoff=0, bg=BG_INPUT, fg=FG_PRIMARY,
+                           activebackground=BG_SELECT, activeforeground=FG_BRIGHT)
+        ctx_menu.add_command(label='Ping this host',
+                             command=lambda: self._ctx_navigate('PING'))
+        ctx_menu.add_command(label='DNS lookup',
+                             command=lambda: self._ctx_navigate('DNS'))
+        ctx_menu.add_command(label='SSL inspect (port 443)',
+                             command=lambda: self._ctx_navigate('SSL/TLS'))
+        ctx_menu.add_separator()
+        self._tree._menu.add_separator()
+        self._tree._menu.add_command(label='Ping this host',
+                                     command=lambda: self._ctx_navigate('PING'))
+        self._tree._menu.add_command(label='DNS lookup',
+                                     command=lambda: self._ctx_navigate('DNS'))
 
         self._scanning = False
 
@@ -750,9 +834,15 @@ class PortScanPanel(tk.Frame):
                 return
             self._progress_var.set(f'Scanning {len(ports)} ports on {host}...')
 
+            proto = self._proto_var.get()
+
             def run():
-                port_scan(host, ports, timeout=timeout, callback=self._on_port,
-                          threads=min(100, len(ports)))
+                if proto == 'UDP':
+                    udp_port_scan(host, ports, timeout=timeout,
+                                  callback=self._on_port)
+                else:
+                    port_scan(host, ports, timeout=timeout, callback=self._on_port,
+                              threads=min(100, len(ports)))
                 self._done_scan()
 
             self._thread = threading.Thread(target=run, daemon=True)
@@ -776,6 +866,15 @@ class PortScanPanel(tk.Frame):
             self._open_count += 1
         values = (r.port, r.service, r.state.upper(), f'{r.rtt_ms:.1f}', r.banner[:60])
         self._tree.tree.insert('', 'end', values=values, tags=(r.state,))
+
+    def _ctx_navigate(self, tab):
+        sel = self._tree.tree.selection()
+        if not sel:
+            return
+        host = self._host_entry.get().strip()
+        app = _get_app()
+        if app:
+            app.navigate_to(tab, host)
 
     def _parse_ports(self, s: str):
         ports = set()
@@ -830,6 +929,10 @@ class DNSPanel(tk.Frame):
         btn = tk.Button(ctrl, text='⌖  LOOKUP', **BUTTON_GREEN_OPTS, command=self._lookup)
         btn.pack(side='left', padx=8)
 
+        doh_btn = tk.Button(ctrl, text='⇅  COMPARE DoH', **BUTTON_OPTS,
+                            command=self._doh_compare)
+        doh_btn.pack(side='left', padx=4)
+
         # Results
         card = CardFrame(self, title='DNS RESULTS')
         card.pack(fill='both', expand=True, padx=8, pady=4)
@@ -882,6 +985,34 @@ class DNSPanel(tk.Frame):
                 self._raw.append(f'{r.query:<40} {r.record_type:<8} {a}\n', 'ok')
         elif r.error:
             self._raw.append(f'{r.query:<40} {r.record_type:<8} ERROR: {r.error}\n', 'err')
+
+    def _doh_compare(self):
+        host = self._host_entry.get().strip()
+        if not host:
+            return
+        rtypes = [t for t, v in self._type_vars.items() if v.get()] or ['A']
+        self._raw.clear()
+        self._raw.append(f'; DoH comparison for {host}\n', 'hdr')
+
+        def run():
+            for rtype in rtypes:
+                result = doh_lookup(host, rtype)
+                self.after(0, self._show_doh, host, rtype, result)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_doh(self, host, rtype, result):
+        self._raw.append(f'\n; {rtype} records\n', 'hdr')
+        g = result.get('google', [])
+        cf = result.get('cloudflare', [])
+        self._raw.append(f'  Google DoH      : {", ".join(g) or "(none)"}\n',
+                         'ok' if g and not any("Error" in str(x) for x in g) else 'err')
+        self._raw.append(f'  Cloudflare DoH  : {", ".join(cf) or "(none)"}\n',
+                         'ok' if cf and not any("Error" in str(x) for x in cf) else 'err')
+        if set(str(x) for x in g) == set(str(x) for x in cf):
+            self._raw.append('  ✓ Results match\n', 'ok')
+        else:
+            self._raw.append('  ✗ Results differ!\n', 'err')
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -944,6 +1075,19 @@ class ARPPanel(tk.Frame):
         self._tree.pack(fill='both', expand=True, padx=4, pady=4)
         self._tree.tree.tag_configure('found', foreground=ACCENT_GREEN)
 
+        # Right-click context menu items (appended to DarkTreeview's existing menu)
+        self._tree._menu.add_separator()
+        self._tree._menu.add_command(label='Ping this host',
+                                     command=lambda: self._arp_ctx('PING'))
+        self._tree._menu.add_command(label='Port scan this host',
+                                     command=lambda: self._arp_ctx('PORT SCAN'))
+        self._tree._menu.add_command(label='DNS lookup',
+                                     command=lambda: self._arp_ctx('DNS'))
+        self._tree._menu.add_command(label='WHOIS lookup',
+                                     command=lambda: self._arp_ctx('WHOIS'))
+        self._tree._menu.add_command(label='Wake-on-LAN →',
+                                     command=self._arp_ctx_wol)
+
         self._load_interfaces()
 
     def _load_interfaces(self):
@@ -1005,6 +1149,33 @@ class ARPPanel(tk.Frame):
     def _on_host_ip(self, ip):
         from core.engine import ARPEntry
         self._on_host(ARPEntry(ip=ip, mac='(ping sweep)', hostname=''))
+
+    def _arp_selected_ip(self):
+        sel = self._tree.tree.selection()
+        if sel:
+            vals = self._tree.tree.item(sel[0])['values']
+            if vals:
+                return str(vals[0])
+        return None
+
+    def _arp_ctx(self, tab):
+        ip = self._arp_selected_ip()
+        if ip:
+            app = _get_app()
+            if app:
+                app.navigate_to(tab, ip)
+
+    def _arp_ctx_wol(self):
+        """Pre-fill Wake-on-LAN panel with selected row's MAC."""
+        sel = self._tree.tree.selection()
+        if not sel:
+            return
+        vals = self._tree.tree.item(sel[0])['values']
+        if vals and len(vals) >= 2:
+            mac = str(vals[1])
+            app = _get_app()
+            if app:
+                app.navigate_to('WOL', mac)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -1180,6 +1351,18 @@ class ExternalMonitorPanel(tk.Frame):
                        bg=BG_CARD, fg=FG_PRIMARY, selectcolor=BG_INPUT,
                        activebackground=BG_CARD, font=FONT_UI_SM).pack(side='left', padx=8)
 
+        tk.Label(row, text='Alert loss%>', bg=BG_CARD, fg=FG_DIM,
+                 font=FONT_LABEL).pack(side='left', padx=(8, 2))
+        self._alert_loss_ext = tk.Entry(row, width=4, **ENTRY_OPTS)
+        self._alert_loss_ext.insert(0, '10')
+        self._alert_loss_ext.pack(side='left', padx=2, ipady=2)
+
+        tk.Label(row, text='ms>', bg=BG_CARD, fg=FG_DIM,
+                 font=FONT_LABEL).pack(side='left', padx=(6, 2))
+        self._alert_lat_ext = tk.Entry(row, width=5, **ENTRY_OPTS)
+        self._alert_lat_ext.insert(0, '200')
+        self._alert_lat_ext.pack(side='left', padx=2, ipady=2)
+
         add_btn = tk.Button(row, text='＋ ADD TARGET', **BUTTON_GREEN_OPTS,
                             command=self._add_target)
         add_btn.pack(side='left', padx=4)
@@ -1316,10 +1499,19 @@ class ExternalMonitorPanel(tk.Frame):
             loss = stats['loss_pct']
             last = stats['last_ms']
 
+            try:
+                alert_loss = float(self._alert_loss_ext.get())
+            except (ValueError, AttributeError):
+                alert_loss = 10.0
+            try:
+                alert_lat = float(self._alert_lat_ext.get())
+            except (ValueError, AttributeError):
+                alert_lat = 200.0
+
             if last < 0:
                 status = '●'
                 tag = 'down'
-            elif loss > 10 or last > 200:
+            elif loss >= alert_loss or (last >= 0 and last > alert_lat):
                 status = '◑'
                 tag = 'warn'
             else:
@@ -1359,3 +1551,708 @@ class ExternalMonitorPanel(tk.Frame):
                 idx = min(int((rtt / max_v) * 8), 8)
                 parts.append(bars[idx])
         return ''.join(parts)
+
+
+
+# ─────────────────────────────────────────────────────────────────
+# 10. SSL / TLS INSPECTOR PANEL
+# ─────────────────────────────────────────────────────────────────
+
+class SSLPanel(tk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG_PANEL)
+        self._build()
+
+    def _build(self):
+        ctrl = tk.Frame(self, bg=BG_PANEL, pady=6)
+        ctrl.pack(fill='x', padx=8)
+
+        tk.Label(ctrl, text='Host', **LABEL_OPTS).pack(side='left', padx=(6, 4))
+        self._host = tk.Entry(ctrl, width=30, **ENTRY_OPTS)
+        self._host.insert(0, 'example.com')
+        self._host.pack(side='left', padx=2, ipady=3)
+        self._host.bind('<Return>', lambda e: self._inspect())
+
+        tk.Label(ctrl, text='Port', **LABEL_OPTS).pack(side='left', padx=(8, 4))
+        self._port = tk.Entry(ctrl, width=6, **ENTRY_OPTS)
+        self._port.insert(0, '443')
+        self._port.pack(side='left', padx=2, ipady=3)
+
+        tk.Button(ctrl, text='INSPECT TLS', **BUTTON_GREEN_OPTS,
+                  command=self._inspect).pack(side='left', padx=8)
+
+        self._status_var = tk.StringVar(value='')
+        self._status_lbl = tk.Label(ctrl, textvariable=self._status_var,
+                                    bg=BG_PANEL, fg=FG_DIM, font=FONT_MONO_SM)
+        self._status_lbl.pack(side='left', padx=4)
+
+        cert_card = CardFrame(self, title='CERTIFICATE INFO')
+        cert_card.pack(fill='x', padx=8, pady=4)
+        grid = cert_card.body
+        grid.configure(bg=BG_CARD)
+
+        self._fields = {}
+        rows = [
+            ('Status',         'status'),
+            ('Subject CN',     'subject_cn'),
+            ('Subject',        'subject'),
+            ('Issuer',         'issuer'),
+            ('TLS Version',    'version'),
+            ('Cipher Suite',   'cipher'),
+            ('Valid From',     'not_before'),
+            ('Valid To',       'not_after'),
+            ('Days Remaining', 'days_remaining'),
+        ]
+        for i, (label, key) in enumerate(rows):
+            tk.Label(grid, text=label + ':', bg=BG_CARD, fg=FG_DIM,
+                     font=FONT_LABEL, anchor='e', width=14).grid(
+                row=i, column=0, sticky='e', padx=(10, 4), pady=2)
+            var = tk.StringVar(value='\u2014')
+            lbl = tk.Label(grid, textvariable=var, bg=BG_CARD,
+                           fg=FG_PRIMARY, font=FONT_MONO_SM, anchor='w')
+            lbl.grid(row=i, column=1, sticky='w', padx=4, pady=2)
+            self._fields[key] = (var, lbl)
+
+        san_card = CardFrame(self, title='SUBJECT ALTERNATIVE NAMES (SAN)')
+        san_card.pack(fill='x', padx=8, pady=(0, 4))
+        self._san_text = ScrolledText(san_card.body, height=4, state='disabled')
+        self._san_text.pack(fill='both', expand=True, padx=4, pady=4)
+        self._san_text.configure_tags(
+            ok=dict(foreground=ACCENT_GREEN),
+            wild=dict(foreground=ACCENT_YELLOW),
+            dim=dict(foreground=FG_DIM),
+        )
+
+        log_card = CardFrame(self, title='RAW DETAIL')
+        log_card.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+        self._log = ScrolledText(log_card.body, height=8, state='disabled')
+        self._log.pack(fill='both', expand=True, padx=4, pady=4)
+        self._log.configure_tags(
+            ok=dict(foreground=ACCENT_GREEN),
+            warn=dict(foreground=ACCENT_YELLOW),
+            err=dict(foreground=ACCENT_RED),
+            hdr=dict(foreground=ACCENT_CYAN),
+            dim=dict(foreground=FG_DIM),
+        )
+
+    def _inspect(self):
+        host = self._host.get().strip()
+        if not host:
+            return
+        try:
+            port = int(self._port.get())
+        except ValueError:
+            port = 443
+        self._status_var.set('Connecting...')
+        self._status_lbl.configure(fg=ACCENT_YELLOW)
+        self._log.clear()
+        self._san_text.clear()
+        for key, (var, lbl) in self._fields.items():
+            var.set('\u2014')
+            lbl.configure(fg=FG_PRIMARY)
+        self._log.append(f'; TLS Inspection: {host}:{port}\n', 'hdr')
+
+        def run():
+            info = ssl_inspect(host, port)
+            self.after(0, self._show_result, info)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_result(self, info):
+        self._status_var.set('')
+
+        def sf(key, value, color=FG_PRIMARY):
+            var, lbl = self._fields[key]
+            var.set(str(value) if value else '\u2014')
+            lbl.configure(fg=color)
+
+        if info.error and not info.subject_cn:
+            sf('status', f'ERROR: {info.error}', ACCENT_RED)
+            self._status_var.set('ERROR')
+            self._status_lbl.configure(fg=ACCENT_RED)
+        elif info.expired:
+            sf('status', 'EXPIRED', ACCENT_RED)
+            self._status_var.set('EXPIRED')
+            self._status_lbl.configure(fg=ACCENT_RED)
+        elif info.days_remaining < 30 and info.not_after:
+            sf('status', f'EXPIRING SOON \u2014 {info.days_remaining} days', ACCENT_YELLOW)
+            self._status_var.set(f'EXPIRING SOON ({info.days_remaining}d)')
+            self._status_lbl.configure(fg=ACCENT_YELLOW)
+        elif info.verified:
+            sf('status', f'VALID \u2713  ({info.days_remaining} days remaining)', ACCENT_GREEN)
+            self._status_var.set(f'VALID \u2713  {info.days_remaining}d')
+            self._status_lbl.configure(fg=ACCENT_GREEN)
+        else:
+            sf('status', f'UNVERIFIED  {info.error}', ACCENT_YELLOW)
+            self._status_var.set('UNVERIFIED')
+            self._status_lbl.configure(fg=ACCENT_YELLOW)
+
+        sf('subject_cn', info.subject_cn)
+        sf('subject',    info.subject)
+        sf('issuer',     info.issuer)
+        sf('version',    info.version,
+           ACCENT_GREEN if info.version in ('TLSv1.3', 'TLSv1.2') else ACCENT_YELLOW)
+        sf('cipher',     info.cipher)
+        sf('not_before', info.not_before)
+        sf('not_after',  info.not_after)
+        days = info.days_remaining
+        days_col = ACCENT_GREEN if days > 30 else (ACCENT_YELLOW if days > 0 else ACCENT_RED)
+        sf('days_remaining', str(days) if info.not_after else '\u2014', days_col)
+
+        if info.san:
+            for name in info.san:
+                tag = 'wild' if name.startswith('*') else 'ok'
+                self._san_text.append(name + '\n', tag)
+        else:
+            self._san_text.append('(none)\n', 'dim')
+
+        self._log.append(f'Host     : {info.host}:{info.port}\n', 'hdr')
+        self._log.append(f'TLS      : {info.version}\n',
+                         'ok' if info.version else 'dim')
+        self._log.append(f'Cipher   : {info.cipher}\n', 'dim')
+        self._log.append(f'CN       : {info.subject_cn}\n', 'ok')
+        self._log.append(f'Subject  : {info.subject}\n', 'dim')
+        self._log.append(f'Issuer   : {info.issuer}\n', 'dim')
+        self._log.append(f'Valid    : {info.not_before}  \u2192  {info.not_after}\n', 'dim')
+        if info.san:
+            self._log.append(f'SANs     : {", ".join(info.san[:8])}\n', 'dim')
+        if info.error:
+            self._log.append(f'Error    : {info.error}\n', 'err')
+
+
+# ─────────────────────────────────────────────────────────────────
+# 11. HTTP PROBE PANEL
+# ─────────────────────────────────────────────────────────────────
+
+class HTTPProbePanel(tk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG_PANEL)
+        self._build()
+
+    def _build(self):
+        ctrl = tk.Frame(self, bg=BG_PANEL, pady=6)
+        ctrl.pack(fill='x', padx=8)
+
+        tk.Label(ctrl, text='URL', **LABEL_OPTS).pack(side='left', padx=(6, 4))
+        self._url = tk.Entry(ctrl, width=44, **ENTRY_OPTS)
+        self._url.insert(0, 'https://example.com')
+        self._url.pack(side='left', padx=2, ipady=3)
+        self._url.bind('<Return>', lambda e: self._probe())
+
+        self._method = tk.StringVar(value='GET')
+        for m in ['GET', 'HEAD']:
+            tk.Radiobutton(ctrl, text=m, variable=self._method, value=m,
+                           bg=BG_PANEL, fg=FG_PRIMARY, selectcolor=BG_INPUT,
+                           activebackground=BG_PANEL, font=FONT_UI_SM).pack(side='left', padx=3)
+
+        self._follow_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(ctrl, text='Follow redirects', variable=self._follow_var,
+                       bg=BG_PANEL, fg=FG_PRIMARY, selectcolor=BG_INPUT,
+                       activebackground=BG_PANEL, font=FONT_UI_SM).pack(side='left', padx=6)
+
+        tk.Button(ctrl, text='PROBE', **BUTTON_GREEN_OPTS,
+                  command=self._probe).pack(side='left', padx=8)
+
+        self._status_var = tk.StringVar(value='')
+        self._status_lbl = tk.Label(ctrl, textvariable=self._status_var,
+                                    bg=BG_PANEL, fg=FG_DIM, font=FONT_MONO_SM)
+        self._status_lbl.pack(side='left', padx=4)
+
+        stat_row = tk.Frame(self, bg=BG_PANEL, pady=4)
+        stat_row.pack(fill='x', padx=8)
+        self._stat_vars = {}
+        for key, label in [('code', 'STATUS'), ('ttfb', 'TTFB ms'),
+                            ('total', 'TOTAL ms'), ('server', 'SERVER'),
+                            ('type', 'CONTENT TYPE'), ('size', 'SIZE')]:
+            frm = tk.Frame(stat_row, bg=BG_CARD,
+                           highlightthickness=1, highlightbackground=BORDER_DIM,
+                           padx=10, pady=6)
+            frm.pack(side='left', padx=2)
+            tk.Label(frm, text=label, bg=BG_CARD, fg=FG_DIM,
+                     font=('Segoe UI', 7, 'bold')).pack()
+            var = tk.StringVar(value='\u2014')
+            self._stat_vars[key] = var
+            tk.Label(frm, textvariable=var, bg=BG_CARD,
+                     fg=ACCENT_CYAN, font=FONT_MONO_SM).pack()
+
+        redir_card = CardFrame(self, title='REDIRECT CHAIN')
+        redir_card.pack(fill='x', padx=8, pady=4)
+        self._redir_log = ScrolledText(redir_card.body, height=3, state='disabled')
+        self._redir_log.pack(fill='both', expand=True, padx=4, pady=4)
+        self._redir_log.configure_tags(
+            hdr=dict(foreground=ACCENT_CYAN),
+            ok=dict(foreground=ACCENT_GREEN),
+            dim=dict(foreground=FG_DIM),
+            err=dict(foreground=ACCENT_RED),
+        )
+
+        hdr_card = CardFrame(self, title='RESPONSE HEADERS')
+        hdr_card.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+        self._hdr_tree = DarkTreeview(hdr_card.body,
+                                      ('name', 'value'),
+                                      ('HEADER', 'VALUE'),
+                                      (220, 520))
+        self._hdr_tree.pack(fill='both', expand=True, padx=4, pady=4)
+
+    def _probe(self):
+        url = self._url.get().strip()
+        if not url:
+            return
+        self._status_var.set('Probing...')
+        self._status_lbl.configure(fg=ACCENT_YELLOW)
+        self._redir_log.clear()
+        self._hdr_tree.clear()
+        for var in self._stat_vars.values():
+            var.set('\u2014')
+
+        def run():
+            result = http_probe(url, method=self._method.get(),
+                                follow_redirects=self._follow_var.get())
+            self.after(0, self._show_result, result)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_result(self, r):
+        if r.error:
+            self._status_var.set(f'Error: {r.error}')
+            self._status_lbl.configure(fg=ACCENT_RED)
+            return
+        code = r.status_code
+        code_color = (ACCENT_GREEN if 200 <= code < 300
+                      else ACCENT_YELLOW if 300 <= code < 400
+                      else ACCENT_RED)
+        self._stat_vars['code'].set(f'{code} {r.status_text}')
+        self._stat_vars['ttfb'].set(f'{r.ttfb_ms:.0f}')
+        self._stat_vars['total'].set(f'{r.total_ms:.0f}')
+        self._stat_vars['server'].set(r.server or '\u2014')
+        self._stat_vars['type'].set(
+            r.content_type.split(';')[0] if r.content_type else '\u2014')
+        self._stat_vars['size'].set(
+            f'{r.content_length/1024:.1f} KB' if r.content_length else '\u2014')
+        self._status_var.set(f'{code} {r.status_text}  \u00b7  {r.total_ms:.0f} ms')
+        self._status_lbl.configure(fg=code_color)
+
+        if r.redirect_chain:
+            self._redir_log.append(f'{r.url}\n', 'hdr')
+            for step in r.redirect_chain:
+                self._redir_log.append(f'  \u2192 {step}\n', 'ok')
+            self._redir_log.append(f'  \u2192 {r.final_url}  [{code}]\n', 'ok')
+        else:
+            self._redir_log.append(
+                f'{r.url}  \u2192  {r.final_url}  [{code}]\n', 'dim')
+
+        for name, val in sorted(r.headers.items()):
+            self._hdr_tree.tree.insert('', 'end', values=(name, str(val)[:200]))
+
+
+# ─────────────────────────────────────────────────────────────────
+# 12. WHOIS PANEL
+# ─────────────────────────────────────────────────────────────────
+
+class WHOISPanel(tk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG_PANEL)
+        self._build()
+
+    def _build(self):
+        ctrl = tk.Frame(self, bg=BG_PANEL, pady=6)
+        ctrl.pack(fill='x', padx=8)
+
+        tk.Label(ctrl, text='Domain / IP', **LABEL_OPTS).pack(side='left', padx=(6, 4))
+        self._entry = tk.Entry(ctrl, width=30, **ENTRY_OPTS)
+        self._entry.insert(0, 'example.com')
+        self._entry.pack(side='left', padx=2, ipady=3)
+        self._entry.bind('<Return>', lambda e: self._lookup())
+
+        tk.Button(ctrl, text='WHOIS', **BUTTON_GREEN_OPTS,
+                  command=self._lookup).pack(side='left', padx=8)
+
+        self._status_var = tk.StringVar(value='')
+        tk.Label(ctrl, textvariable=self._status_var,
+                 bg=BG_PANEL, fg=FG_DIM, font=FONT_LABEL).pack(side='left', padx=4)
+
+        quick_frm = tk.Frame(self, bg=BG_PANEL)
+        quick_frm.pack(fill='x', padx=8, pady=2)
+        tk.Label(quick_frm, text='Quick:', **LABEL_OPTS).pack(side='left', padx=4)
+        for target in ['8.8.8.8', '1.1.1.1', 'google.com', 'cloudflare.com', 'github.com']:
+            tk.Button(quick_frm, text=target, **BUTTON_OPTS,
+                      command=lambda t=target: (
+                          self._entry.delete(0, 'end'),
+                          self._entry.insert(0, t),
+                          self._lookup()
+                      )).pack(side='left', padx=2)
+
+        out_card = CardFrame(self, title='WHOIS OUTPUT')
+        out_card.pack(fill='both', expand=True, padx=8, pady=4)
+        self._out = ScrolledText(out_card.body, height=30, state='disabled')
+        self._out.pack(fill='both', expand=True, padx=4, pady=4)
+        self._out.configure_tags(
+            hdr=dict(foreground=ACCENT_CYAN, font=('Courier New', 9, 'bold')),
+            key=dict(foreground=ACCENT_GREEN),
+            val=dict(foreground=FG_PRIMARY),
+            dim=dict(foreground=FG_DIM),
+            err=dict(foreground=ACCENT_RED),
+        )
+
+    def _lookup(self):
+        target = self._entry.get().strip()
+        if not target:
+            return
+        self._status_var.set('Querying...')
+        self._out.clear()
+        self._out.append(
+            f'; WHOIS: {target}  [{time.strftime("%H:%M:%S")}]\n', 'hdr')
+
+        def run():
+            text = whois_lookup(target)
+            self.after(0, self._show, text)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show(self, text: str):
+        self._status_var.set('')
+        for line in text.split('\n'):
+            stripped = line.strip()
+            if (stripped.startswith(';') or stripped.startswith('%')
+                    or stripped.startswith('>>>')):
+                self._out.append(line + '\n', 'dim')
+            elif (':' in line and not line.startswith(' ')
+                  and not line.startswith('\t')):
+                key, _, val = line.partition(':')
+                self._out.append(key + ':', 'key')
+                self._out.append(val + '\n', 'val')
+            else:
+                self._out.append(line + '\n', 'val')
+
+
+# ─────────────────────────────────────────────────────────────────
+# 13. WAKE-ON-LAN PANEL
+# ─────────────────────────────────────────────────────────────────
+
+class WakeOnLANPanel(tk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG_PANEL)
+        self._saved: list = []
+        self._build()
+
+    def _build(self):
+        send_card = CardFrame(self, title='SEND MAGIC PACKET')
+        send_card.pack(fill='x', padx=8, pady=8)
+        grid = send_card.body
+        grid.configure(bg=BG_CARD)
+
+        fields = [
+            ('MAC Address',  '_mac',       'AA:BB:CC:DD:EE:FF', 22),
+            ('Broadcast IP', '_broadcast', '255.255.255.255',    18),
+            ('UDP Port',     '_wol_port',  '9',                   8),
+        ]
+        for row_i, (label, attr, default, width) in enumerate(fields):
+            tk.Label(grid, text=label + ':', bg=BG_CARD, fg=FG_DIM,
+                     font=FONT_LABEL, anchor='e', width=14).grid(
+                row=row_i, column=0, sticky='e', padx=(10, 4), pady=6)
+            entry = tk.Entry(grid, width=width, **ENTRY_OPTS)
+            entry.insert(0, default)
+            entry.grid(row=row_i, column=1, sticky='w', padx=4, pady=6, ipady=3)
+            setattr(self, attr, entry)
+
+        btn_frm = tk.Frame(grid, bg=BG_CARD)
+        btn_frm.grid(row=3, column=1, sticky='w', padx=4, pady=10)
+        tk.Button(btn_frm, text='SEND MAGIC PACKET', **BUTTON_GREEN_OPTS,
+                  command=self._send).pack(side='left', padx=4)
+        tk.Button(btn_frm, text='SAVE TARGET', **BUTTON_OPTS,
+                  command=self._save_target).pack(side='left', padx=4)
+
+        tk.Label(self,
+                 text=('WoL sends a UDP broadcast magic packet (6\u00d7FF + MAC\u00d716). '
+                       'Target must have WoL enabled in BIOS/UEFI and NIC settings.'),
+                 bg=BG_PANEL, fg=FG_DIM, font=FONT_LABEL,
+                 justify='left').pack(anchor='w', padx=12, pady=(0, 4))
+
+        saved_card = CardFrame(self, title='SAVED TARGETS')
+        saved_card.pack(fill='x', padx=8, pady=4)
+        lbf = tk.Frame(saved_card.body, bg=BG_CARD)
+        lbf.pack(fill='x', padx=4, pady=4)
+        self._saved_lb = tk.Listbox(lbf, **LISTBOX_OPTS, height=5)
+        self._saved_lb.pack(side='left', fill='both', expand=True)
+        self._saved_lb.bind('<Double-Button-1>', self._load_saved)
+        bc = tk.Frame(lbf, bg=BG_CARD)
+        bc.pack(side='left', padx=4, fill='y')
+        tk.Button(bc, text='LOAD',   **BUTTON_OPTS,
+                  command=self._load_saved).pack(pady=2)
+        tk.Button(bc, text='DELETE', **BUTTON_RED_OPTS,
+                  command=self._delete_saved).pack(pady=2)
+
+        log_card = CardFrame(self, title='LOG')
+        log_card.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+        self._log = ScrolledText(log_card.body, height=8, state='disabled')
+        self._log.pack(fill='both', expand=True, padx=4, pady=4)
+        self._log.configure_tags(
+            ok=dict(foreground=ACCENT_GREEN),
+            err=dict(foreground=ACCENT_RED),
+            info=dict(foreground=ACCENT_CYAN),
+            dim=dict(foreground=FG_DIM),
+        )
+
+    def _send(self):
+        mac = self._mac.get().strip()
+        broadcast = self._broadcast.get().strip() or '255.255.255.255'
+        try:
+            port = int(self._wol_port.get())
+        except ValueError:
+            port = 9
+        ts = time.strftime('%H:%M:%S')
+        try:
+            wake_on_lan(mac, broadcast, port)
+            self._log.append(
+                f'[{ts}]  Magic packet sent  \u2192  {mac}  via {broadcast}:{port}\n', 'ok')
+        except Exception as e:
+            self._log.append(f'[{ts}]  Error: {e}\n', 'err')
+
+    def _save_target(self):
+        mac  = self._mac.get().strip()
+        bc   = self._broadcast.get().strip()
+        port = self._wol_port.get().strip()
+        if mac:
+            label = f'{mac}  |  {bc}:{port}'
+            self._saved.append((label, mac, bc, port))
+            self._saved_lb.insert('end', label)
+
+    def _load_saved(self, event=None):
+        sel = self._saved_lb.curselection()
+        if sel:
+            idx = sel[0]
+            if idx < len(self._saved):
+                _, mac, bc, port = self._saved[idx]
+                for entry, val in [(self._mac, mac),
+                                   (self._broadcast, bc),
+                                   (self._wol_port, port)]:
+                    entry.delete(0, 'end')
+                    entry.insert(0, val)
+
+    def _delete_saved(self):
+        sel = self._saved_lb.curselection()
+        if sel:
+            idx = sel[0]
+            self._saved_lb.delete(idx)
+            if idx < len(self._saved):
+                self._saved.pop(idx)
+
+    def prefill_mac(self, mac: str):
+        """Called via cross-tab navigation from ARP panel."""
+        self._mac.delete(0, 'end')
+        self._mac.insert(0, mac)
+
+
+
+# ─────────────────────────────────────────────────────────────────
+# 14. NETSTAT PANEL
+# ─────────────────────────────────────────────────────────────────
+
+class NetstatPanel(tk.Frame):
+    _PROTOS = ['All', 'TCP', 'UDP', 'TCP6', 'UDP6']
+    _STATES = ['All', 'LISTEN', 'ESTABLISHED', 'TIME_WAIT',
+               'CLOSE_WAIT', 'SYN_SENT', 'SYN_RECV', 'FIN_WAIT1',
+               'FIN_WAIT2', 'CLOSING', 'CLOSED', 'NONE']
+    _REFRESH_OPTS = {'Off': 0, '2 s': 2000, '5 s': 5000, '10 s': 10000}
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG_PANEL)
+        self._all_rows = []          # List[NetstatEntry]
+        self._after_id = None
+        self._refresh_ms = 0
+        self._build()
+
+    def _build(self):
+        from core import netstat_snapshot as _ns
+
+        # ── Filter bar ──────────────────────────────────────────────
+        fbar = tk.Frame(self, bg=BG_PANEL)
+        fbar.pack(fill='x', padx=10, pady=(8, 4))
+
+        tk.Label(fbar, text='Proto:', **LABEL_OPTS).pack(side='left')
+        self._proto_var = tk.StringVar(value='All')
+        proto_cb = ttk.Combobox(fbar, textvariable=self._proto_var,
+                                values=self._PROTOS, width=7, state='readonly')
+        proto_cb.pack(side='left', padx=(2, 10))
+        proto_cb.bind('<<ComboboxSelected>>', lambda e: self._apply_filter())
+
+        tk.Label(fbar, text='State:', **LABEL_OPTS).pack(side='left')
+        self._state_var = tk.StringVar(value='All')
+        state_cb = ttk.Combobox(fbar, textvariable=self._state_var,
+                                values=self._STATES, width=13, state='readonly')
+        state_cb.pack(side='left', padx=(2, 10))
+        state_cb.bind('<<ComboboxSelected>>', lambda e: self._apply_filter())
+
+        tk.Label(fbar, text='Port:', **LABEL_OPTS).pack(side='left')
+        self._port_var = tk.StringVar()
+        port_e = tk.Entry(fbar, textvariable=self._port_var, width=7, **ENTRY_OPTS)
+        port_e.pack(side='left', padx=(2, 10))
+        self._port_var.trace_add('write', lambda *_: self._apply_filter())
+
+        tk.Label(fbar, text='Process:', **LABEL_OPTS).pack(side='left')
+        self._proc_var = tk.StringVar()
+        proc_e = tk.Entry(fbar, textvariable=self._proc_var, width=12, **ENTRY_OPTS)
+        proc_e.pack(side='left', padx=(2, 10))
+        self._proc_var.trace_add('write', lambda *_: self._apply_filter())
+
+        # Refresh controls
+        tk.Frame(fbar, bg=BORDER_DIM, width=1).pack(
+            side='left', fill='y', pady=2, padx=8)
+
+        tk.Button(fbar, text='REFRESH', command=self._do_refresh,
+                  **BUTTON_OPTS).pack(side='left', padx=4)
+
+        tk.Label(fbar, text='Auto:', **LABEL_OPTS).pack(side='left', padx=(8, 2))
+        self._auto_var = tk.StringVar(value='Off')
+        auto_cb = ttk.Combobox(fbar, textvariable=self._auto_var,
+                               values=list(self._REFRESH_OPTS.keys()),
+                               width=6, state='readonly')
+        auto_cb.pack(side='left')
+        auto_cb.bind('<<ComboboxSelected>>', lambda e: self._set_auto())
+
+        # ── Tree ────────────────────────────────────────────────────
+        cols   = ('proto', 'local', 'remote', 'state', 'pid', 'process')
+        hdrs   = ('PROTO', 'LOCAL', 'REMOTE', 'STATE', 'PID', 'PROCESS')
+        widths = (60, 200, 200, 120, 60, 140)
+        self._tree = DarkTreeview(self, cols, hdrs, widths)
+        self._tree.pack(fill='both', expand=True, padx=10, pady=(0, 4))
+
+        # State colour tags
+        tv = self._tree.tree
+        tv.tag_configure('LISTEN',      foreground=ACCENT_GREEN)
+        tv.tag_configure('ESTABLISHED', foreground=ACCENT_CYAN)
+        tv.tag_configure('TIME_WAIT',   foreground=ACCENT_YELLOW)
+        tv.tag_configure('CLOSE_WAIT',  foreground=ACCENT_ORANGE)
+        tv.tag_configure('closed',      foreground=FG_DIM)
+
+        # Right-click context menu
+        self._tree._menu.add_separator()
+        self._tree._menu.add_command(label='Ping this host',
+                                     command=self._ctx_ping)
+        self._tree._menu.add_command(label='Port scan this host',
+                                     command=self._ctx_portscan)
+        self._tree._menu.add_command(label='WHOIS this host',
+                                     command=self._ctx_whois)
+
+        # ── Status line ─────────────────────────────────────────────
+        self._status_var = tk.StringVar(value='Press REFRESH to load connections')
+        tk.Label(self, textvariable=self._status_var,
+                 bg=BG_PANEL, fg=FG_DIM,
+                 font=FONT_LABEL, anchor='w').pack(
+                     fill='x', padx=12, pady=(0, 6))
+
+        # Initial load
+        self.after(200, self._do_refresh)
+
+    # ── Data ────────────────────────────────────────────────────────
+
+    def _do_refresh(self):
+        from core import netstat_snapshot
+        from .widgets import run_in_thread
+        self._status_var.set('Scanning…')
+
+        def _fetch():
+            return netstat_snapshot()
+
+        def _done(rows):
+            if rows is None:
+                rows = []
+            self._all_rows = rows
+            self._apply_filter()
+
+        run_in_thread(_fetch, callback=lambda r: self.after(0, _done, r))
+
+    def _apply_filter(self):
+        proto_f = self._proto_var.get()
+        state_f = self._state_var.get()
+        port_f  = self._port_var.get().strip()
+        proc_f  = self._proc_var.get().strip().lower()
+
+        self._tree.clear()
+        counts = {}
+        shown = 0
+
+        for e in self._all_rows:
+            if proto_f != 'All' and e.proto != proto_f:
+                continue
+            state_norm = (e.state or '').upper().replace('_WAIT', '_WAIT')
+            if state_f != 'All' and state_norm != state_f:
+                continue
+            if port_f:
+                if (str(e.local_port) != port_f and
+                        str(e.remote_port) != port_f):
+                    continue
+            if proc_f and proc_f not in e.process.lower():
+                continue
+
+            local  = f'{e.local_addr}:{e.local_port}'  if e.local_addr  else '-'
+            remote = f'{e.remote_addr}:{e.remote_port}' if e.remote_addr else '-'
+            state_disp = state_norm or '-'
+
+            tag = state_norm if state_norm in (
+                'LISTEN', 'ESTABLISHED', 'TIME_WAIT', 'CLOSE_WAIT') else ''
+
+            self._tree.insert(
+                (e.proto, local, remote, state_disp,
+                 str(e.pid) if e.pid else '-', e.process),
+                tags=(tag,) if tag else ())
+            counts[state_norm] = counts.get(state_norm, 0) + 1
+            shown += 1
+
+        total = len(self._all_rows)
+        summary = ', '.join(f'{s}: {n}' for s, n in
+                            sorted(counts.items(), key=lambda x: -x[1])[:4])
+        self._status_var.set(
+            f'{shown} / {total} connections   [{summary}]')
+
+    # ── Auto-refresh ─────────────────────────────────────────────
+
+    def _set_auto(self):
+        if self._after_id:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+        ms = self._REFRESH_OPTS.get(self._auto_var.get(), 0)
+        self._refresh_ms = ms
+        if ms:
+            self._schedule_auto()
+
+    def _schedule_auto(self):
+        if self._refresh_ms:
+            self._after_id = self.after(self._refresh_ms, self._auto_tick)
+
+    def _auto_tick(self):
+        self._do_refresh()
+        self._schedule_auto()
+
+    # ── Context menu ─────────────────────────────────────────────
+
+    def _selected_remote_ip(self):
+        sel = self._tree.tree.selection()
+        if not sel:
+            return None
+        vals = self._tree.tree.item(sel[0])['values']
+        remote = str(vals[2]) if len(vals) > 2 else ''
+        if ':' in remote and remote != '-':
+            return remote.rsplit(':', 1)[0]
+        return None
+
+    def _ctx_ping(self):
+        ip = self._selected_remote_ip()
+        if ip:
+            app = _get_app()
+            if app:
+                app.navigate_to('PING', prefill=ip)
+
+    def _ctx_portscan(self):
+        ip = self._selected_remote_ip()
+        if ip:
+            app = _get_app()
+            if app:
+                app.navigate_to('PORT SCAN', prefill=ip)
+
+    def _ctx_whois(self):
+        ip = self._selected_remote_ip()
+        if ip:
+            app = _get_app()
+            if app:
+                app.navigate_to('WHOIS', prefill=ip)
