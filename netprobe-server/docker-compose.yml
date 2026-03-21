@@ -1,0 +1,81 @@
+# ── NetProbe Server — Docker Compose ────────────────────────────────────────
+#
+# Quick start:
+#   cp .env.example .env          # edit .env with your API key
+#   docker compose up -d
+#
+# With Cloudflare Tunnel (recommended for remote iOS access):
+#   docker compose --profile tunnel up -d
+
+services:
+
+  netprobe:
+    build: .
+    image: netprobe-server:latest
+    container_name: netprobe
+    restart: unless-stopped
+
+    # Raw socket access (required for ICMP ping, traceroute, ARP)
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+    # host networking so the server can scan the LAN the host is on.
+    # Remove and use ports: if you want strict network isolation.
+    network_mode: host
+
+    environment:
+      - NETPROBE_API_KEY=${NETPROBE_API_KEY}
+      - NETPROBE_PORT=${NETPROBE_PORT:-8765}
+      - NETPROBE_HOST=${NETPROBE_HOST:-0.0.0.0}
+      - NETPROBE_LOG_LEVEL=${NETPROBE_LOG_LEVEL:-info}
+      - NETPROBE_MAX_CIDR_HOSTS=${NETPROBE_MAX_CIDR_HOSTS:-1024}
+      - NETPROBE_CORS_ORIGINS=${NETPROBE_CORS_ORIGINS:-*}
+
+    volumes:
+      # Persist nothing by default — the server is stateless.
+      # Uncomment to mount a custom .env inside the container:
+      # - ./.env:/app/.env:ro
+      []
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:${NETPROBE_PORT:-8765}/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  # ── Optional: Cloudflare Tunnel sidecar ────────────────────────────────────
+  # Exposes netprobe securely via your Cloudflare domain without opening
+  # any inbound firewall ports. Requires a valid tunnel credential file.
+  #
+  # Setup (one time):
+  #   docker run -it --rm -v ~/.cloudflared:/root/.cloudflared cloudflare/cloudflared:latest \
+  #     tunnel login
+  #   docker run -it --rm -v ~/.cloudflared:/root/.cloudflared cloudflare/cloudflared:latest \
+  #     tunnel create netprobe
+  #   # Then edit cloudflare/config.yml with your tunnel ID + hostname
+  #
+  # Then: docker compose --profile tunnel up -d
+
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    container_name: netprobe-tunnel
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ~/.cloudflared:/root/.cloudflared:ro
+      - ./cloudflare/config.yml:/etc/cloudflared/config.yml:ro
+    depends_on:
+      netprobe:
+        condition: service_healthy

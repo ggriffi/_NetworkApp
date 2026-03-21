@@ -1,0 +1,60 @@
+# ── Cloudflare Tunnel Configuration ──────────────────────────────────────────
+# Copy this file to config.yml and fill in your tunnel ID + hostname.
+# Place it at ~/.cloudflared/config.yml on your server, OR
+# mount it into the cloudflared Docker container (see docker-compose.yml).
+#
+# First-time setup (run once on your server):
+#
+#   1. Install cloudflared:
+#        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+#          -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared
+#
+#   2. Authenticate (opens browser, saves cert to ~/.cloudflared/cert.pem):
+#        cloudflared tunnel login
+#
+#   3. Create the tunnel (saves credentials JSON to ~/.cloudflared/<TUNNEL-ID>.json):
+#        cloudflared tunnel create netprobe
+#
+#   4. Add a DNS route (creates CNAME in your Cloudflare zone):
+#        cloudflared tunnel route dns netprobe netprobe.yourdomain.com
+#
+#   5. Fill in the values below and save as ~/.cloudflared/config.yml
+#
+#   6. Start the tunnel:
+#        cloudflared tunnel run netprobe
+#     OR via Docker Compose:
+#        docker compose --profile tunnel up -d
+
+tunnel: <YOUR-TUNNEL-ID>                 # e.g. 6ff42ae2-765d-4adf-9fd2-2cc21da47fc0
+credentials-file: /root/.cloudflared/<YOUR-TUNNEL-ID>.json
+
+ingress:
+  - hostname: netprobe.yourdomain.com    # ← your public hostname
+    service: http://localhost:8765       # ← where NetProbe Server is listening
+
+    originRequest:
+      # Keep WebSocket connections alive through Cloudflare's 100-second idle timeout.
+      # The server sends WS ping frames every 30s (configured in main.py uvicorn.run).
+      connectTimeout: 30s
+      keepAliveConnections: 10
+      keepAliveTimeout: 90s
+      noTLSVerify: false
+
+  # Catch-all — required by cloudflared
+  - service: http_status:404
+
+# ── Cloudflare Access (optional but strongly recommended) ─────────────────────
+# Protect the tunnel with an identity gate so only you can reach it.
+# Configure in the Cloudflare Zero Trust dashboard:
+#
+#   Access → Applications → Add an application → Self-hosted
+#   Domain: netprobe.yourdomain.com
+#   Policy: Allow → Emails → your@email.com
+#
+# Your iOS app will need to handle the Access JWT.
+# For a personal app, use a Cloudflare Access Service Token instead:
+#
+#   Access → Service Auth → Create Service Token
+#   → copy Client ID + Client Secret
+#   → send as headers: CF-Access-Client-Id / CF-Access-Client-Secret
+#   → OR as query params when your HTTP client can't set custom headers
