@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m PyInstaller --version)",
+      "Bash(pip show:*)",
+      "Bash(python -m PyInstaller NetProbe.spec --clean)"
+    ]
+  }
+}

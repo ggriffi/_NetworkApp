@@ -784,12 +784,13 @@ def port_scan(host: str, ports: List[int], timeout: float = 1.0,
             except queue.Empty:
                 break
             t0 = time.perf_counter()
+            banner = ''
+            rtt    = 0.0
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(timeout)
                 err = sock.connect_ex((ip, port))
                 rtt = (time.perf_counter() - t0) * 1000
-                banner = ''
                 if err == 0:
                     state = 'open'
                     # Try banner grab

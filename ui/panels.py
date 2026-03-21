@@ -784,9 +784,9 @@ class PortScanPanel(tk.Frame):
         card = CardFrame(self, title='SCAN RESULTS')
         card.pack(fill='both', expand=True, padx=8, pady=4)
 
-        cols = ('port', 'service', 'state', 'rtt', 'banner')
-        hdrs = ('PORT', 'SERVICE', 'STATE', 'RTT ms', 'BANNER')
-        widths = (60, 100, 70, 70, 350)
+        cols = ('host', 'port', 'service', 'state', 'rtt', 'banner')
+        hdrs = ('HOST', 'PORT', 'SERVICE', 'STATE', 'RTT ms', 'BANNER')
+        widths = (130, 60, 100, 70, 70, 300)
         self._tree = DarkTreeview(card.body, cols, hdrs, widths)
         self._tree.pack(fill='both', expand=True, padx=4, pady=4)
 
@@ -813,6 +813,25 @@ class PortScanPanel(tk.Frame):
 
         self._scanning = False
 
+    def _expand_targets(self, target: str):
+        """Return list of IP strings. Handles single host/IP and CIDR notation."""
+        import ipaddress
+        target = target.strip()
+        if '/' in target:
+            try:
+                net = ipaddress.ip_network(target, strict=False)
+                hosts = list(net.hosts())
+                if len(hosts) > 1024:
+                    if not messagebox.askyesno(
+                            'Large subnet',
+                            f'{target} contains {len(hosts)} hosts.\n'
+                            f'Scanning all may take a long time. Continue?'):
+                        return []
+                return [str(h) for h in hosts]
+            except ValueError:
+                pass
+        return [target]
+
     def _toggle_scan(self):
         if not self._scanning:
             self._scanning = True
@@ -820,11 +839,11 @@ class PortScanPanel(tk.Frame):
             self._tree.clear()
             self._open_count = 0
             self._stop_event.clear()
-            host = self._host_entry.get().strip()
+            target = self._host_entry.get().strip()
             ports_str = self._ports_entry.get().strip()
             try:
                 timeout = float(self._timeout_var.get())
-            except:
+            except Exception:
                 timeout = 0.5
             ports = self._parse_ports(ports_str)
             if not ports:
@@ -832,18 +851,37 @@ class PortScanPanel(tk.Frame):
                 self._scanning = False
                 self._scan_btn.configure(text='▶  SCAN', **BUTTON_GREEN_OPTS)
                 return
-            self._progress_var.set(f'Scanning {len(ports)} ports on {host}...')
+            hosts = self._expand_targets(target)
+            if not hosts:
+                self._scanning = False
+                self._scan_btn.configure(text='▶  SCAN', **BUTTON_GREEN_OPTS)
+                return
+
+            self._total_hosts = len(hosts)
+            self._hosts_done  = 0
+            self._progress_var.set(
+                f'Scanning {len(ports)} ports × {len(hosts)} host(s)…')
 
             proto = self._proto_var.get()
 
             def run():
-                if proto == 'UDP':
-                    udp_port_scan(host, ports, timeout=timeout,
-                                  callback=self._on_port)
-                else:
-                    port_scan(host, ports, timeout=timeout, callback=self._on_port,
-                              threads=min(100, len(ports)))
-                self._done_scan()
+                for host in hosts:
+                    if self._stop_event.is_set():
+                        break
+                    if proto == 'UDP':
+                        udp_port_scan(host, ports, timeout=timeout,
+                                      callback=self._on_port)
+                    else:
+                        port_scan(host, ports, timeout=timeout,
+                                  callback=self._on_port,
+                                  threads=min(100, len(ports)))
+                    self._hosts_done += 1
+                    remaining = self._total_hosts - self._hosts_done
+                    self.after(0, self._progress_var.set,
+                               f'Host {self._hosts_done}/{self._total_hosts} done'
+                               f'{f" — {remaining} remaining" if remaining else ""}  '
+                               f'({self._open_count} open)')
+                self.after(0, self._done_scan)
 
             self._thread = threading.Thread(target=run, daemon=True)
             self._thread.start()
@@ -855,23 +893,28 @@ class PortScanPanel(tk.Frame):
     def _done_scan(self):
         self._scanning = False
         self._scan_btn.configure(text='▶  SCAN', **BUTTON_GREEN_OPTS)
-        self._progress_var.set(f'Done — {self._open_count} open ports found')
+        self._progress_var.set(
+            f'Done — {self._open_count} open port(s) across '
+            f'{self._hosts_done} host(s)')
 
     def _on_port(self, r):
         if self._stop_event.is_set():
             return
         if r.state == 'closed':
-            return  # only show open/filtered
+            return
         if r.state == 'open':
             self._open_count += 1
-        values = (r.port, r.service, r.state.upper(), f'{r.rtt_ms:.1f}', r.banner[:60])
-        self._tree.tree.insert('', 'end', values=values, tags=(r.state,))
+        values = (r.host, r.port, r.service, r.state.upper(),
+                  f'{r.rtt_ms:.1f}', r.banner[:60] if r.banner else '')
+        self.after(0, self._tree.tree.insert, '', 'end',
+                   values=values, tags=(r.state,))
 
     def _ctx_navigate(self, tab):
         sel = self._tree.tree.selection()
         if not sel:
             return
-        host = self._host_entry.get().strip()
+        vals = self._tree.tree.item(sel[0])['values']
+        host = str(vals[0]) if vals else self._host_entry.get().strip()
         app = _get_app()
         if app:
             app.navigate_to(tab, host)
