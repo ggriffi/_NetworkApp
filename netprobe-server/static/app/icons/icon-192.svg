@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="40" fill="#141416"/>
+  <polygon points="96,28 164,68 164,124 96,164 28,124 28,68" fill="none" stroke="#00d9ff" stroke-width="8"/>
+  <polygon points="96,52 140,76 140,116 96,140 52,116 52,76" fill="#00d9ff" opacity="0.15"/>
+  <text x="96" y="108" text-anchor="middle" font-family="monospace" font-size="52" font-weight="bold" fill="#00d9ff">⬡</text>
+</svg>

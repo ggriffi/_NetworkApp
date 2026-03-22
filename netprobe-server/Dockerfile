@@ -54,6 +54,7 @@ WORKDIR /app
 # Application source
 COPY core/    ./core/
 COPY server/  ./server/
+COPY static/  ./static/
 COPY main.py  .
 
 # Non-root user for everything except raw-socket ops

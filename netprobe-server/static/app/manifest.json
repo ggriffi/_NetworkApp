@@ -1,0 +1,19 @@
+{
+  "name": "NetProbe",
+  "short_name": "NetProbe",
+  "description": "Network analysis toolkit",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#141416",
+  "theme_color": "#141416",
+  "icons": [
+    {
+      "src": "/app/icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

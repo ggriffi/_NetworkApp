@@ -9,7 +9,12 @@
       "Bash(mkdir -p server)",
       "Bash(.venv/Scripts/pip install:*)",
       "Bash(\"c:/Users/Geoff/Desktop/_VS-Code-Projects/_NetworkApp/.venv/Scripts/python\" -c \":*)",
-      "Bash(\"c:/Users/Geoff/Desktop/_VS-Code-Projects/_NetworkApp/.venv/Scripts/python\" -W error -c \"from server.api import app; print\\(f''Clean import — {len\\(app.routes\\)} routes, 0 warnings''\\)\")"
+      "Bash(\"c:/Users/Geoff/Desktop/_VS-Code-Projects/_NetworkApp/.venv/Scripts/python\" -W error -c \"from server.api import app; print\\(f''Clean import — {len\\(app.routes\\)} routes, 0 warnings''\\)\")",
+      "Bash(pip install:*)",
+      "Bash(python -c \":*)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\Geoff\\Desktop\\_VS-Code-Projects\\_NetworkApp\\netprobe-server\\static\\app"
     ]
   }
 }

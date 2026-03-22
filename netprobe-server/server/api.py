@@ -22,7 +22,8 @@ from fastapi import (
     WebSocketDisconnect, status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # ── path setup so core/ is importable from netprobe-server/server/ ──────────
@@ -72,6 +73,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Serve the PWA at /app  — must be last so API routes take priority
+    _static_dir = os.path.join(os.path.dirname(_HERE), "static", "app")
+    if os.path.isdir(_static_dir):
+        app.mount("/app", StaticFiles(directory=_static_dir, html=True), name="pwa")
 
     return app
 
