@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mkdir -p \"c:/Users/Geoff/Desktop/_VS-Code-Projects/_NetworkApp/netprobe-server/static/app/css\")",
-      "Bash(mkdir -p \"c:/Users/Geoff/Desktop/_VS-Code-Projects/_NetworkApp/netprobe-server/static/app/js/views\")",
-      "Bash(mkdir -p \"c:/Users/Geoff/Desktop/_VS-Code-Projects/_NetworkApp/netprobe-server/static/app/icons\")"
-    ]
-  }
-}
