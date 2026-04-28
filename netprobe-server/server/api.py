@@ -185,7 +185,7 @@ class _WSSession:
         Accept the WebSocket, run start(), then pump messages until the client
         disconnects or sends {"cmd":"stop"}. Calls stop() on teardown.
         """
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         await self.ws.accept()
         start()
 
@@ -399,7 +399,7 @@ async def api_dns(
     _key: str = Depends(verify_key),
 ):
     record_types = [t.strip().upper() for t in types.split(",") if t.strip()]
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     results: List[DNSResult] = await loop.run_in_executor(
         None, lambda: dns_lookup(host, record_types=record_types)
     )
@@ -414,7 +414,7 @@ async def api_doh(
     type: str = Query("A"),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: doh_lookup(domain, type.upper()))
     return result
 
@@ -427,7 +427,7 @@ async def api_ssl(
     port: int = Query(443, ge=1, le=65535),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result: SSLInfo = await loop.run_in_executor(
         None, lambda: ssl_inspect(host, port=port)
     )
@@ -443,7 +443,7 @@ async def api_http(
     follow_redirects: bool = Query(True),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result: HTTPResult = await loop.run_in_executor(
         None, lambda: http_probe(url, method=method, follow_redirects=follow_redirects)
     )
@@ -457,7 +457,7 @@ async def api_whois(
     target: str = Query(..., description="Domain or IP address"),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     raw: str = await loop.run_in_executor(None, lambda: whois_lookup(target))
     return {"target": target, "raw": raw}
 
@@ -469,7 +469,7 @@ async def api_geoip(
     ip: str = Query(...),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result: GeoIPResult = await loop.run_in_executor(None, lambda: geoip_lookup(ip))
     return _dc(result)
 
@@ -481,7 +481,7 @@ async def api_asn(
     ip: str = Query(...),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, lambda: asn_lookup(ip))
     return result if isinstance(result, dict) else {"asn": str(result)}
 
@@ -496,7 +496,7 @@ async def api_netstat(
     process: Optional[str] = Query(None, description="Filter by process name (case-insensitive)"),
     _key: str = Depends(verify_key),
 ):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     entries: List[NetstatEntry] = await loop.run_in_executor(None, netstat_snapshot)
 
     if proto:
@@ -515,7 +515,7 @@ async def api_netstat(
 
 @app.get("/api/interfaces")
 async def api_interfaces(_key: str = Depends(verify_key)):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, get_local_interfaces)
     return result
 
@@ -529,7 +529,7 @@ async def api_sweep(
 ):
     settings = get_settings()
     expand_cidr(network, settings.max_cidr_hosts)  # raises 400 if too large
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     live: List[str] = await loop.run_in_executor(None, lambda: ping_sweep(network))
     return {"network": network, "live": live, "count": len(live)}
 
@@ -544,7 +544,7 @@ class WoLRequest(BaseModel):
 
 @app.post("/api/wol")
 async def api_wol(body: WoLRequest, _key: str = Depends(verify_key)):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     ok: bool = await loop.run_in_executor(
         None,
         lambda: wake_on_lan(body.mac, broadcast=body.broadcast, port=body.port),
@@ -567,7 +567,7 @@ async def api_ping(
     """
     import time as _time
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     results = []
     done = asyncio.Event()
 

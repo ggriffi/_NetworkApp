@@ -20,6 +20,10 @@ from datetime import datetime
 
 OS = platform.system()  # 'Linux', 'Windows', 'Darwin'
 
+# Suppress the black console window that Windows shows for every subprocess.
+# Pass **_HIDE to every subprocess.Popen / run / check_output call.
+_HIDE = {'creationflags': 0x08000000} if OS == 'Windows' else {}
+
 # ─────────────────────────────────────────────
 # iperf3 binary resolver
 # ─────────────────────────────────────────────
@@ -228,7 +232,7 @@ def _subprocess_ping(host: str, seq: int) -> PingResult:
             cmd = ['ping', '-n', '1', '-w', '2000', host]
         else:
             cmd = ['ping', '-c', '1', '-W', '2', host]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5, **_HIDE)
         output = result.stdout
         # parse time= from output
         import re
@@ -357,7 +361,7 @@ def _subprocess_traceroute(host: str, max_hops: int, callback: Callable) -> List
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding='utf-8', errors='replace')
+                                text=True, encoding='utf-8', errors='replace', **_HIDE)
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -502,10 +506,10 @@ class IPerf3Client:
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                bufsize=1  # line-buffered
+                bufsize=1,  # line-buffered
+                **_HIDE
             )
 
-            import re
             while True:
                 line = self._proc.stdout.readline()
                 if not line:
@@ -676,7 +680,7 @@ class MTRMonitor:
             cmd = ['tracert', '-d', '-h', str(self.max_hops), '-w', '2000', self.host]
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                        text=True, encoding='utf-8', errors='replace')
+                                        text=True, encoding='utf-8', errors='replace', **_HIDE)
                 for line in proc.stdout:
                     if self._stop.is_set():
                         proc.terminate()
@@ -720,7 +724,7 @@ class MTRMonitor:
         if OS == 'Windows':
             return
         try:
-            subprocess.run(['mtr', '--version'], capture_output=True)
+            subprocess.run(['mtr', '--version'], capture_output=True, **_HIDE)
         except FileNotFoundError:
             return
 
@@ -728,7 +732,7 @@ class MTRMonitor:
                '--interval', str(self.interval), self.host]
         while not self._stop.is_set():
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, **_HIDE)
                 import re
                 for line in result.stdout.split('\n'):
                     m = re.match(r'\s*(\d+)\.\s+(\S+)\s+([\d.]+)%\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)', line)
@@ -943,7 +947,7 @@ def _arp_cache_parse(callback: Callable = None) -> List[ARPEntry]:
     results = []
     try:
         if OS == 'Windows':
-            out = subprocess.check_output(['arp', '-a'], text=True)
+            out = subprocess.check_output(['arp', '-a'], text=True, **_HIDE)
             for line in out.split('\n'):
                 m = re.search(r'(\d+\.\d+\.\d+\.\d+)\s+([\w-]{17})', line)
                 if m:
@@ -952,7 +956,7 @@ def _arp_cache_parse(callback: Callable = None) -> List[ARPEntry]:
                     if callback:
                         callback(entry)
         else:
-            out = subprocess.check_output(['arp', '-n'], text=True, stderr=subprocess.DEVNULL)
+            out = subprocess.check_output(['arp', '-n'], text=True, stderr=subprocess.DEVNULL, **_HIDE)
             for line in out.split('\n')[1:]:
                 parts = line.split()
                 if len(parts) >= 3 and ':' in parts[2]:
@@ -1105,7 +1109,7 @@ class BandwidthClient:
                 try:
                     sent = sock.send(payload)
                     total += sent
-                except:
+                except OSError:
                     break
 
                 now = time.perf_counter()
@@ -1487,7 +1491,7 @@ def _cymru_raw_dns(ip: str, reversed_ip: str) -> str:
             cmd = ['dig', '+short', 'TXT', query]
 
         result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=5, encoding='utf-8', errors='replace')
+                                timeout=5, encoding='utf-8', errors='replace', **_HIDE)
         output = result.stdout
 
         import re
@@ -1502,7 +1506,7 @@ def _cymru_raw_dns(ip: str, reversed_ip: str) -> str:
                 cmd2 = ['dig', '+short', 'TXT', f'AS{asn_num}.asn.cymru.com']
 
             result2 = subprocess.run(cmd2, capture_output=True, text=True,
-                                     timeout=5, encoding='utf-8', errors='replace')
+                                     timeout=5, encoding='utf-8', errors='replace', **_HIDE)
             # Last pipe-separated field is org name
             parts = result2.stdout.split('|')
             org = parts[-1].strip().strip('"').strip() if len(parts) >= 5 else ''
@@ -1672,9 +1676,10 @@ def _extract_cert_dict(cert: dict, info: SSLInfo):
     info.not_after  = cert.get('notAfter', '')
     if info.not_after:
         try:
-            from datetime import datetime as _dt
+            from datetime import datetime as _dt, timezone as _tz
             expire = _dt.strptime(info.not_after, '%b %d %H:%M:%S %Y %Z')
-            info.days_remaining = (expire - _dt.utcnow()).days
+            now_naive = _dt.now(_tz.utc).replace(tzinfo=None)
+            info.days_remaining = (expire - now_naive).days
             info.expired = info.days_remaining < 0
         except Exception:
             pass
@@ -1720,7 +1725,7 @@ def _parse_der_cert(der: bytes, info: SSLInfo):
         import re as _re
         pem = _ssl_mod.DER_cert_to_PEM_cert(der)
         res = subprocess.run(['openssl', 'x509', '-text', '-noout'],
-                             input=pem, capture_output=True, text=True, timeout=5)
+                             input=pem, capture_output=True, text=True, timeout=5, **_HIDE)
         out = res.stdout
         m = _re.search(r'Subject:.*?CN\s*=\s*([^\n,/]+)', out)
         if m:
@@ -1735,9 +1740,10 @@ def _parse_der_cert(der: bytes, info: SSLInfo):
         if m:
             info.not_after = m.group(1).strip()
             try:
-                from datetime import datetime as _dt
+                from datetime import datetime as _dt, timezone as _tz
                 expire = _dt.strptime(info.not_after.strip(), '%b %d %H:%M:%S %Y %Z')
-                info.days_remaining = (expire - _dt.utcnow()).days
+                now_naive = _dt.now(_tz.utc).replace(tzinfo=None)
+                info.days_remaining = (expire - now_naive).days
                 info.expired = info.days_remaining < 0
             except Exception:
                 pass
@@ -2044,7 +2050,7 @@ def _netstat_subprocess() -> List['NetstatEntry']:
     try:
         out = subprocess.check_output(
             ['netstat', '-ano'], text=True,
-            stderr=subprocess.DEVNULL, timeout=10)
+            stderr=subprocess.DEVNULL, timeout=10, **_HIDE)
         for line in out.splitlines():
             parts = line.split()
             if not parts:
