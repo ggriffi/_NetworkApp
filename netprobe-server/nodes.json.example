@@ -1,0 +1,47 @@
+[
+  {
+    "id":      "nyc",
+    "name":    "New York",
+    "city":    "New York",
+    "country": "US",
+    "flag":    "🇺🇸",
+    "url":     "https://nyc.netprobe.example.com:8765",
+    "key":     ""
+  },
+  {
+    "id":      "lon",
+    "name":    "London",
+    "city":    "London",
+    "country": "GB",
+    "flag":    "🇬🇧",
+    "url":     "https://lon.netprobe.example.com:8765",
+    "key":     ""
+  },
+  {
+    "id":      "fra",
+    "name":    "Frankfurt",
+    "city":    "Frankfurt",
+    "country": "DE",
+    "flag":    "🇩🇪",
+    "url":     "https://fra.netprobe.example.com:8765",
+    "key":     ""
+  },
+  {
+    "id":      "sin",
+    "name":    "Singapore",
+    "city":    "Singapore",
+    "country": "SG",
+    "flag":    "🇸🇬",
+    "url":     "https://sin.netprobe.example.com:8765",
+    "key":     ""
+  },
+  {
+    "id":      "syd",
+    "name":    "Sydney",
+    "city":    "Sydney",
+    "country": "AU",
+    "flag":    "🇦🇺",
+    "url":     "https://syd.netprobe.example.com:8765",
+    "key":     ""
+  }
+]

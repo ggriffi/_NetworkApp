@@ -3,6 +3,7 @@
 import PingView       from './views/ping.js';
 import TracerouteView from './views/traceroute.js';
 import MTRView        from './views/mtr.js';
+import GlobalPingView from './views/globalping.js';
 import PortScanView   from './views/portscan.js';
 import DNSView        from './views/dns.js';
 import SSLView        from './views/ssl.js';
@@ -15,18 +16,19 @@ import SettingsView   from './views/settings.js';
 
 const TOOLS = [
   // group, id, label, icon, view-module
-  { group: 'NETWORK',   id: 'ping',       label: 'Ping',        icon: '◈', view: PingView       },
-  { group: 'NETWORK',   id: 'traceroute', label: 'Traceroute',  icon: '⇢', view: TracerouteView },
-  { group: 'NETWORK',   id: 'mtr',        label: 'MTR',         icon: '⊞', view: MTRView        },
-  { group: 'DISCOVERY', id: 'portscan',   label: 'Port Scan',   icon: '⬡', view: PortScanView   },
-  { group: 'DISCOVERY', id: 'dns',        label: 'DNS',         icon: '◎', view: DNSView        },
-  { group: 'DISCOVERY', id: 'arp',        label: 'ARP Scan',    icon: '⬟', view: ARPView        },
-  { group: 'DISCOVERY', id: 'netstat',    label: 'Netstat',     icon: '⊟', view: NetstatView    },
-  { group: 'SECURITY',  id: 'ssl',        label: 'SSL / TLS',   icon: '🔒', view: SSLView        },
-  { group: 'SECURITY',  id: 'http',       label: 'HTTP Probe',  icon: '↯', view: HTTPView       },
-  { group: 'SECURITY',  id: 'whois',      label: 'WHOIS',       icon: '?', view: WHOISView      },
-  { group: 'TOOLS',     id: 'wol',        label: 'Wake-on-LAN', icon: '⏻', view: WoLView        },
-  { group: 'TOOLS',     id: 'settings',   label: 'Settings',    icon: '⚙', view: SettingsView   },
+  { group: 'NETWORK',   id: 'globalping', label: 'Global Ping',  icon: '⊛', view: GlobalPingView },
+  { group: 'NETWORK',   id: 'ping',       label: 'Ping',         icon: '◈', view: PingView       },
+  { group: 'NETWORK',   id: 'traceroute', label: 'Traceroute',   icon: '⇢', view: TracerouteView },
+  { group: 'NETWORK',   id: 'mtr',        label: 'MTR',          icon: '⊞', view: MTRView        },
+  { group: 'DISCOVERY', id: 'portscan',   label: 'Port Scan',    icon: '⬡', view: PortScanView   },
+  { group: 'DISCOVERY', id: 'dns',        label: 'DNS',          icon: '◎', view: DNSView        },
+  { group: 'DISCOVERY', id: 'arp',        label: 'ARP Scan',     icon: '⬟', view: ARPView        },
+  { group: 'DISCOVERY', id: 'netstat',    label: 'Netstat',      icon: '⊟', view: NetstatView    },
+  { group: 'SECURITY',  id: 'ssl',        label: 'SSL / TLS',    icon: '🔒', view: SSLView        },
+  { group: 'SECURITY',  id: 'http',       label: 'HTTP Probe',   icon: '↯', view: HTTPView       },
+  { group: 'SECURITY',  id: 'whois',      label: 'WHOIS',        icon: '?', view: WHOISView      },
+  { group: 'TOOLS',     id: 'wol',        label: 'Wake-on-LAN',  icon: '⏻', view: WoLView        },
+  { group: 'TOOLS',     id: 'settings',   label: 'Settings',     icon: '⚙', view: SettingsView   },
 ];
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -148,5 +150,5 @@ buildNav();
 checkHealth();
 setInterval(checkHealth, 30_000);
 
-const lastRoute = sessionStorage.getItem('np_route') || 'ping';
+const lastRoute = sessionStorage.getItem('np_route') || 'globalping';
 navigate(lastRoute);

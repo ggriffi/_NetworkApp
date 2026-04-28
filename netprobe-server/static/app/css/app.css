@@ -509,3 +509,143 @@ canvas.sparkline {
   to   { opacity: 1; transform: translateY(0); }
 }
 .fadein { animation: fadein 0.2s ease; }
+
+/* ── Global Ping — ping.pe-style multi-node grid ──────────────────── */
+
+.gping-grid {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;           /* horizontal scroll on small screens  */
+  margin-bottom: 12px;
+}
+
+/* Shared grid columns: [node 185px] [status 28px] [avg 82px] [loss 60px] [last 82px] [dots 1fr] */
+.gping-header,
+.gping-row {
+  display: grid;
+  grid-template-columns: 185px 28px 82px 60px 82px 1fr;
+  align-items: center;
+  padding: 0 14px;
+  min-width: 580px;
+}
+
+.gping-header {
+  padding-top:    8px;
+  padding-bottom: 8px;
+  border-bottom:  1px solid var(--border);
+  background:     var(--bg-panel);
+}
+
+.gping-row {
+  min-height: 50px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.1s;
+}
+.gping-row:last-child { border-bottom: none; }
+.gping-row:hover { background: rgba(255,255,255,0.02); }
+
+.gping-lbl {
+  font-family:    var(--mono);
+  font-size:      10px;
+  font-weight:    700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color:          var(--fg-dim);
+}
+
+/* Node info cell */
+.gping-node-info {
+  display:   flex;
+  align-items: center;
+  gap:       8px;
+  overflow:  hidden;
+}
+
+.gping-flag {
+  font-size:  20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.gping-name {
+  font-family:     var(--mono);
+  font-size:       13px;
+  font-weight:     600;
+  color:           var(--fg);
+  display:         block;
+  white-space:     nowrap;
+  overflow:        hidden;
+  text-overflow:   ellipsis;
+}
+
+.gping-city {
+  font-size:   11px;
+  color:       var(--fg-dim);
+  white-space: nowrap;
+}
+
+/* Status dot (●/○/✗/◌) */
+.gping-status {
+  font-size:  14px;
+  text-align: center;
+  display:    block;
+  transition: color 0.2s;
+}
+
+.status-pending { color: var(--fg-dim); }
+.status-ok      { color: var(--green); }
+.status-timeout { color: var(--yellow); }
+.status-offline { color: var(--red); }
+
+/* Right-aligned stat cells */
+.gping-r {
+  font-family:  var(--mono);
+  font-size:    13px;
+  text-align:   right;
+  padding-right: 10px;
+  white-space:  nowrap;
+}
+
+/* Dots container */
+.gping-dots-wrap {
+  overflow:       hidden;
+  display:        flex;
+  align-items:    center;
+  height:         100%;
+  padding-left:   6px;
+}
+
+.gping-dots {
+  display:     flex;
+  align-items: center;
+  gap:         2px;
+  overflow:    hidden;   /* oldest dots fall off the left edge naturally */
+}
+
+/* Individual ping-result dot chip */
+.gping-dot {
+  width:        10px;
+  height:       22px;
+  border-radius: 2px;
+  flex-shrink:  0;
+  cursor:       default;
+  transition:   filter 0.1s;
+}
+.gping-dot:hover { filter: brightness(1.25); }
+
+.gping-dot.gp-green   { background: var(--green); }
+.gping-dot.gp-yellow  { background: var(--yellow); }
+.gping-dot.gp-orange  { background: var(--orange); }
+.gping-dot.gp-red     { background: var(--red); }
+.gping-dot.gp-timeout { background: rgba(96,96,112,0.22); }
+
+/* Traceroute mode */
+.gping-trace-hdr {
+  display:     flex;
+  align-items: center;
+  gap:         10px;
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size:   13px;
+}

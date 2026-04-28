@@ -49,6 +49,7 @@ from core import (                         # noqa: E402
 )
 from .auth import verify_key, verify_ws_key
 from .config import get_settings
+from .nodes import load_nodes, ping_node, traceroute_node, node_meta, check_health
 
 VERSION = "1.1.0"
 
@@ -597,3 +598,194 @@ async def api_ping(
         "rtt_max": round(max(valid), 3) if valid else None,
     }
     return {"summary": summary, "results": collected}
+
+
+# ── REST: Node registry ───────────────────────────────────────────────────────
+
+@app.get("/api/nodes")
+async def api_nodes(_key: str = Depends(verify_key)):
+    """List all configured nodes with live health status."""
+    nodes = load_nodes()
+    health = await asyncio.gather(*[check_health(n) for n in nodes])
+    return [{"online": ok, **node_meta(n)} for n, ok in zip(nodes, health)]
+
+
+# ── REST: Traceroute (blocking — used by remote nodes for fan-out) ────────────
+
+@app.get("/api/traceroute")
+async def api_traceroute(
+    host: str = Query(...),
+    max_hops: int = Query(30, ge=1, le=64),
+    _key: str = Depends(verify_key),
+):
+    """Blocking traceroute — returns all hops when complete."""
+    loop = asyncio.get_running_loop()
+    hops = await loop.run_in_executor(
+        None, lambda: traceroute(host, max_hops=max_hops)
+    )
+    return [_dc(h) for h in hops]
+
+
+# ── WebSocket: Global Ping (multi-node fan-out, streaming) ───────────────────
+
+@app.websocket("/ws/globalping")
+async def ws_globalping(
+    websocket: WebSocket,
+    host: str = Query(..., description="Target hostname or IP"),
+    interval: float = Query(2.0, ge=1.0, le=60.0,
+                            description="Seconds between ping rounds"),
+):
+    """
+    Ping host from every configured node simultaneously.
+
+    Message envelope (server → client):
+      {"type": "nodes",      "data": [...node metas...]}       — sent once on connect
+      {"type": "ping",       "data": {node_id, rtt_ms, ...}}  — each probe result
+      {"type": "done"}                                          — on stop/disconnect
+
+    Send {"cmd": "stop"} to terminate.
+    """
+    if not await verify_ws_key(websocket):
+        return
+
+    await websocket.accept()
+    stop_ev   = asyncio.Event()
+    send_lock = asyncio.Lock()
+
+    async def safe_send(msg: dict):
+        async with send_lock:
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                stop_ev.set()
+
+    nodes = load_nodes()
+    await safe_send({"type": "nodes", "data": [node_meta(n) for n in nodes]})
+
+    async def ping_loop(node: dict):
+        loop = asyncio.get_running_loop()
+        while not stop_ev.is_set():
+            t0     = loop.time()
+            result = await ping_node(node, host)
+            if stop_ev.is_set():
+                break
+            await safe_send({"type": "ping",
+                              "data": {"node_id": node["id"], **result}})
+            elapsed    = loop.time() - t0
+            sleep_time = max(0.0, interval - elapsed)
+            if sleep_time > 0:
+                try:
+                    await asyncio.wait_for(stop_ev.wait(), timeout=sleep_time)
+                except asyncio.TimeoutError:
+                    pass
+
+    async def recv_loop():
+        try:
+            while True:
+                text = await websocket.receive_text()
+                try:
+                    if json.loads(text).get("cmd") == "stop":
+                        stop_ev.set()
+                        return
+                except Exception:
+                    pass
+        except (WebSocketDisconnect, Exception):
+            stop_ev.set()
+
+    node_tasks = [asyncio.create_task(ping_loop(n)) for n in nodes]
+    recv_task  = asyncio.create_task(recv_loop())
+
+    await stop_ev.wait()
+    recv_task.cancel()
+    for t in node_tasks:
+        t.cancel()
+    await asyncio.gather(*node_tasks, recv_task, return_exceptions=True)
+
+    try:
+        await websocket.send_json({"type": "done"})
+        await websocket.close()
+    except Exception:
+        pass
+
+
+# ── WebSocket: Global Traceroute (multi-node fan-out, streaming) ─────────────
+
+@app.websocket("/ws/globaltrace")
+async def ws_globaltrace(
+    websocket: WebSocket,
+    host: str = Query(...),
+    max_hops: int = Query(30, ge=1, le=64),
+):
+    """
+    Traceroute from every configured node simultaneously.
+
+    Message envelope (server → client):
+      {"type": "nodes",       "data": [...node metas...]}              — once on connect
+      {"type": "hop",         "data": {node_id, hop, ip, rtts, ...}}  — each hop
+      {"type": "trace_done",  "data": {node_id}}                       — node finished
+      {"type": "done"}                                                  — all nodes done
+    """
+    if not await verify_ws_key(websocket):
+        return
+
+    await websocket.accept()
+    stop_ev   = asyncio.Event()
+    send_lock = asyncio.Lock()
+
+    async def safe_send(msg: dict):
+        async with send_lock:
+            try:
+                await websocket.send_json(msg)
+            except Exception:
+                stop_ev.set()
+
+    nodes = load_nodes()
+    await safe_send({"type": "nodes", "data": [node_meta(n) for n in nodes]})
+
+    async def trace_one(node: dict):
+        result = await traceroute_node(node, host, max_hops=max_hops)
+        if stop_ev.is_set():
+            return
+        for hop in result.get("hops", []):
+            if stop_ev.is_set():
+                return
+            await safe_send({"type": "hop",
+                              "data": {"node_id": node["id"], **hop}})
+        await safe_send({"type": "trace_done",
+                          "data": {"node_id": node["id"]}})
+
+    async def recv_loop():
+        try:
+            while True:
+                text = await websocket.receive_text()
+                try:
+                    if json.loads(text).get("cmd") == "stop":
+                        stop_ev.set()
+                        return
+                except Exception:
+                    pass
+        except (WebSocketDisconnect, Exception):
+            stop_ev.set()
+
+    node_tasks  = [asyncio.create_task(trace_one(n)) for n in nodes]
+    recv_task   = asyncio.create_task(recv_loop())
+    all_done    = asyncio.create_task(
+        asyncio.gather(*node_tasks, return_exceptions=True))
+    stop_waiter = asyncio.create_task(stop_ev.wait())
+
+    await asyncio.wait([all_done, stop_waiter],
+                       return_when=asyncio.FIRST_COMPLETED)
+
+    stop_ev.set()
+    stop_waiter.cancel()
+    recv_task.cancel()
+    for t in node_tasks:
+        t.cancel()
+    await asyncio.gather(*node_tasks, recv_task, all_done, stop_waiter,
+                         return_exceptions=True)
+
+    try:
+        await websocket.send_json({"type": "done"})
+        await websocket.close()
+    except Exception:
+        pass
