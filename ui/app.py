@@ -1,6 +1,6 @@
 """
 NetProbe Application — Main Window
-Sidebar navigation layout (collapsible) replacing tab notebook.
+Command-palette navigation (Ctrl+P). No sidebar.
 """
 import tkinter as tk
 from tkinter import ttk
@@ -24,9 +24,6 @@ VERSION = '1.1.0'
 
 _app_instance = None
 SESSION_FILE  = os.path.join(os.path.dirname(__file__), '..', 'netprobe_session.json')
-
-_SIDEBAR_OPEN   = 172
-_SIDEBAR_CLOSED = 46
 
 # (key, label, icon, group)
 _NAV_TOOLS = [
@@ -66,74 +63,6 @@ _PANEL_MAP = {
 }
 
 
-# ─── Sidebar nav button ───────────────────────────────────────────────────────
-
-class _NavButton(tk.Frame):
-    """Single sidebar navigation item: accent-bar | icon | label."""
-
-    _BG        = BG_PANEL
-    _BG_ACTIVE = '#111820'
-    _BG_HOVER  = BG_HOVER
-
-    def __init__(self, parent, icon: str, label: str, command):
-        super().__init__(parent, bg=self._BG, cursor='hand2')
-        self._cmd    = command
-        self._active = False
-
-        # Left accent bar (3 px)
-        self._bar = tk.Frame(self, bg=self._BG, width=3)
-        self._bar.pack(side='left', fill='y')
-
-        # Icon
-        self._icon_lbl = tk.Label(
-            self, text=icon, bg=self._BG, fg=FG_DIM,
-            font=(MONO, 12), width=2, anchor='center')
-        self._icon_lbl.pack(side='left', padx=(6, 3), pady=6)
-
-        # Label (hidden when sidebar collapsed)
-        self._text_lbl = tk.Label(
-            self, text=label, bg=self._BG, fg=FG_DIM,
-            font=FONT_UI, anchor='w')
-        self._text_lbl.pack(side='left', fill='x', expand=True, padx=(0, 8))
-
-        for w in (self, self._bar, self._icon_lbl, self._text_lbl):
-            w.bind('<Button-1>', lambda e: self._cmd())
-            w.bind('<Enter>',    self._on_enter)
-            w.bind('<Leave>',    self._on_leave)
-
-    def set_active(self, active: bool):
-        self._active = active
-        if active:
-            self._bar.config(bg=ACCENT_CYAN)
-            self._icon_lbl.config(fg=ACCENT_CYAN, bg=self._BG_ACTIVE)
-            self._text_lbl.config(fg=FG_BRIGHT,   bg=self._BG_ACTIVE)
-            self.config(bg=self._BG_ACTIVE)
-        else:
-            self._bar.config(bg=self._BG)
-            self._icon_lbl.config(fg=FG_DIM, bg=self._BG)
-            self._text_lbl.config(fg=FG_DIM, bg=self._BG)
-            self.config(bg=self._BG)
-
-    def set_collapsed(self, collapsed: bool):
-        if collapsed:
-            self._text_lbl.pack_forget()
-        else:
-            self._text_lbl.pack(side='left', fill='x', expand=True, padx=(0, 8))
-
-    def _on_enter(self, _=None):
-        if not self._active:
-            bg = self._BG_HOVER
-            self.config(bg=bg)
-            self._icon_lbl.config(bg=bg, fg=FG_PRIMARY)
-            self._text_lbl.config(bg=bg, fg=FG_PRIMARY)
-
-    def _on_leave(self, _=None):
-        if not self._active:
-            self.config(bg=self._BG)
-            self._icon_lbl.config(bg=self._BG, fg=FG_DIM)
-            self._text_lbl.config(bg=self._BG, fg=FG_DIM)
-
-
 # ─── Main application ─────────────────────────────────────────────────────────
 
 class NetProbeApp:
@@ -147,11 +76,8 @@ class NetProbeApp:
         self.root.minsize(800, 580)
         self.root.configure(bg=BG_ROOT)
 
-        self._sidebar_open  = True
-        self._nav_buttons   = {}   # key -> _NavButton
-        self._group_headers = []   # list of (label_widget, separator_widget)
-        self._panels        = {}   # key -> tk.Frame panel
-        self._active_key    = None
+        self._panels      = {}   # key -> tk.Frame panel
+        self._active_key  = None
 
         self._set_icon()
         self._apply_global_style()
@@ -194,30 +120,17 @@ class NetProbeApp:
     # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Title bar
         self._build_title_bar()
         tk.Frame(self.root, bg=BORDER_ACCENT, height=2).pack(fill='x')
 
-        # Quick target bar (global, persistent)
         self._build_quick_target_bar()
         tk.Frame(self.root, bg=BORDER_DIM, height=1).pack(fill='x')
 
-        # Body: sidebar | divider | content
-        body = tk.Frame(self.root, bg=BG_ROOT)
-        body.pack(fill='both', expand=True)
+        # Full-width content area — no sidebar
+        self._content_frm = tk.Frame(self.root, bg=BG_ROOT)
+        self._content_frm.pack(fill='both', expand=True)
 
-        self._sidebar_frm = tk.Frame(body, bg=BG_PANEL, width=_SIDEBAR_OPEN)
-        self._sidebar_frm.pack(side='left', fill='y')
-        self._sidebar_frm.pack_propagate(False)
-
-        tk.Frame(body, bg=BORDER_DIM, width=1).pack(side='left', fill='y')
-
-        self._content_frm = tk.Frame(body, bg=BG_ROOT)
-        self._content_frm.pack(side='left', fill='both', expand=True)
-
-        self._build_sidebar()
-
-        # Breadcrumb strip at top of content area
+        # Breadcrumb strip
         self._breadcrumb_frm = tk.Frame(self._content_frm, bg='#060a0f', height=22)
         self._breadcrumb_frm.pack(fill='x', side='top')
         self._breadcrumb_frm.pack_propagate(False)
@@ -229,17 +142,15 @@ class NetProbeApp:
         self._breadcrumb_lbl.pack(fill='x', pady=3)
         tk.Frame(self._content_frm, bg=BORDER_DIM, height=1).pack(fill='x')
 
-        # Panel container (takes remaining space)
+        # Panel container
         self._panel_host = tk.Frame(self._content_frm, bg=BG_ROOT)
         self._panel_host.pack(fill='both', expand=True)
 
-        # Create all panels stacked on top of each other
         for key, PanelClass in _PANEL_MAP.items():
             p = PanelClass(self._panel_host)
             p.place(relx=0, rely=0, relwidth=1, relheight=1)
             self._panels[key] = p
 
-        # Status bar
         self.status_bar = StatusBar(self.root)
         self.status_bar.pack(fill='x', side='bottom')
         try:
@@ -250,13 +161,12 @@ class NetProbeApp:
 
         self._build_menu()
 
-        # Keyboard shortcuts: Ctrl+1-9 navigate tools, Ctrl+B toggle sidebar
+        # Keyboard shortcuts: Ctrl+1-9 navigate tools
         for i, (key, *_) in enumerate(_NAV_TOOLS[:9]):
             self.root.bind(f'<Control-Key-{i+1}>',
                            lambda e, k=key: self.navigate_to(k))
         self.root.bind('<Control-e>', lambda e: self._export())
         self.root.bind('<Control-w>', lambda e: self._on_close())
-        self.root.bind('<Control-b>', lambda e: self._toggle_sidebar())
         self.root.bind('<Control-p>', lambda e: self._open_command_palette())
 
         self.navigate_to('PING')
@@ -296,7 +206,7 @@ class NetProbeApp:
             tk.Label(chip, text=f' {icon} {val} ', bg='#0d1520',
                      fg=FG_DIM, font=(MONO, 8)).pack()
 
-        # Right: version + toggle button
+        # Right: version + MENU button
         right = tk.Frame(bar, bg='#040608')
         right.pack(side='right', padx=8)
 
@@ -307,12 +217,15 @@ class NetProbeApp:
 
         tk.Frame(bar, bg=BORDER_DIM, width=1).pack(side='right', fill='y', pady=8, padx=6)
 
-        self._sidebar_toggle_lbl = tk.Label(
-            bar, text='◀', bg='#040608', fg=FG_DIM,
-            font=(MONO, 14), cursor='hand2', padx=10)
-        self._sidebar_toggle_lbl.pack(side='right', fill='y')
-        self._sidebar_toggle_lbl.bind('<Button-1>', lambda e: self._toggle_sidebar())
-        Tooltip(self._sidebar_toggle_lbl, 'Toggle sidebar  (Ctrl+B)')
+        # MENU button — opens command palette
+        menu_lbl = tk.Label(
+            bar, text='⌨  MENU', bg='#040608', fg=FG_DIM,
+            font=(MONO, 9, 'bold'), cursor='hand2', padx=14)
+        menu_lbl.pack(side='right', fill='y')
+        menu_lbl.bind('<Button-1>', lambda e: self._open_command_palette())
+        menu_lbl.bind('<Enter>',    lambda e: menu_lbl.config(fg=ACCENT_CYAN))
+        menu_lbl.bind('<Leave>',    lambda e: menu_lbl.config(fg=FG_DIM))
+        Tooltip(menu_lbl, 'Open command palette  (Ctrl+P)')
 
     def _build_quick_target_bar(self):
         bar = tk.Frame(self.root, bg='#080c12', height=36)
@@ -358,93 +271,38 @@ class NetProbeApp:
             btn.pack(side='left', padx=1)
             Tooltip(btn, f'Send target to {label}  (Ctrl+P for full palette)')
 
-        # Ctrl+P hint on far right
-        tk.Label(bar, text='Ctrl+P  palette', bg='#080c12',
-                 fg=FG_DIM, font=(MONO, 8), padx=12).pack(side='right')
+        # Ctrl+P pill on far right — clickable
+        pal_btn = tk.Label(
+            bar, text='  ⌨  Ctrl+P  ', bg='#080c12',
+            fg=FG_DIM, font=(MONO, 8), cursor='hand2', padx=4)
+        pal_btn.pack(side='right', padx=6)
+        pal_btn.bind('<Button-1>', lambda e: self._open_command_palette())
+        pal_btn.bind('<Enter>',    lambda e: pal_btn.config(fg=ACCENT_CYAN))
+        pal_btn.bind('<Leave>',    lambda e: pal_btn.config(fg=FG_DIM))
+        Tooltip(pal_btn, 'Open command palette')
 
     def _qt_dispatch(self, key: str):
         host = self._qt_var.get().strip()
         self.navigate_to(key, prefill=host if host else None)
 
-    def _build_sidebar(self):
-        sb = self._sidebar_frm
-
-        # Scrollable canvas so long nav lists work on small screens
-        self._nav_canvas = tk.Canvas(sb, bg=BG_PANEL, highlightthickness=0, bd=0)
-        self._nav_canvas.pack(fill='both', expand=True)
-
-        self._nav_inner = tk.Frame(self._nav_canvas, bg=BG_PANEL)
-        self._nav_win   = self._nav_canvas.create_window(
-            (0, 0), window=self._nav_inner, anchor='nw')
-
-        def _resize(e):
-            self._nav_canvas.itemconfig(self._nav_win, width=e.width)
-        self._nav_canvas.bind('<Configure>', _resize)
-        self._nav_inner.bind('<Configure>',
-            lambda e: self._nav_canvas.configure(
-                scrollregion=self._nav_canvas.bbox('all')))
-        self._nav_canvas.bind('<MouseWheel>',
-            lambda e: self._nav_canvas.yview_scroll(
-                int(-1 * (e.delta / 120)), 'units'))
-
-        # Build grouped nav entries
-        last_group = None
-        for key, label, icon, group in _NAV_TOOLS:
-            if group != last_group:
-                # Spacer + group header
-                spacer = tk.Frame(self._nav_inner, bg=BG_PANEL, height=6)
-                spacer.pack(fill='x')
-
-                grp_lbl = tk.Label(
-                    self._nav_inner, text=f'  {group}',
-                    bg=BG_PANEL, fg=FG_DIM,
-                    font=(MONO, 7, 'bold'), anchor='w')
-                grp_lbl.pack(fill='x', padx=4, pady=(2, 0))
-
-                sep = tk.Frame(self._nav_inner, bg=BORDER_DIM, height=1)
-                sep.pack(fill='x', padx=8, pady=(2, 4))
-
-                self._group_headers.append((grp_lbl, sep, spacer))
-                last_group = group
-
-            btn = _NavButton(
-                self._nav_inner, icon=icon, label=label,
-                command=lambda k=key: self.navigate_to(k))
-            btn.pack(fill='x')
-            self._nav_buttons[key] = btn
-
-        # Bottom: keyboard hint
-        hint_frm = tk.Frame(sb, bg=BG_PANEL)
-        hint_frm.pack(fill='x', side='bottom', pady=4)
-        tk.Frame(hint_frm, bg=BORDER_DIM, height=1).pack(fill='x')
-        self._sidebar_hint = tk.Label(
-            hint_frm, text='Ctrl+B  toggle sidebar',
-            bg=BG_PANEL, fg=FG_DIM, font=(MONO, 7), pady=4)
-        self._sidebar_hint.pack()
-
     # ── Navigation ────────────────────────────────────────────────────────────
 
     def navigate_to(self, key: str, prefill: str = None):
-        """Raise a panel and mark its nav button active."""
+        """Raise a panel by key."""
         key = key.strip()
         if key not in self._panels:
             return
 
-        if self._active_key and self._active_key in self._nav_buttons:
-            self._nav_buttons[self._active_key].set_active(False)
-
         self._active_key = key
         self._panels[key].tkraise()
-        self._nav_buttons[key].set_active(True)
 
         label = next((lbl for k, lbl, *_ in _NAV_TOOLS if k == key), key)
 
         if hasattr(self, 'status_bar'):
             self.status_bar.set_activity(f'  {label}', ACCENT_CYAN)
 
-        # Update breadcrumb
         if hasattr(self, '_breadcrumb_lbl'):
-            target = prefill or self._qt_var.get().strip() if hasattr(self, '_qt_var') else ''
+            target = prefill or (self._qt_var.get().strip() if hasattr(self, '_qt_var') else '')
             crumb = f'netprobe  ›  {label}'
             if target:
                 crumb += f'  ›  {target}'
@@ -463,20 +321,20 @@ class NetProbeApp:
                     obj.insert(0, prefill)
                 break
 
-    # ── Command palette (Ctrl+P) ──────────────────────────────────
+    # ── Command palette (Ctrl+P) ──────────────────────────────────────────────
 
     def _open_command_palette(self):
         pal = tk.Toplevel(self.root)
         pal.title('')
         pal.configure(bg=BG_PANEL)
-        pal.geometry('480x320')
+        pal.geometry('540x420')
         pal.resizable(False, False)
         pal.transient(self.root)
         pal.grab_set()
 
         # Center on root
         self.root.update_idletasks()
-        rx = self.root.winfo_x() + self.root.winfo_width()  // 2 - 240
+        rx = self.root.winfo_x() + self.root.winfo_width()  // 2 - 270
         ry = self.root.winfo_y() + self.root.winfo_height() // 4
         pal.geometry(f'+{rx}+{ry}')
 
@@ -484,93 +342,120 @@ class NetProbeApp:
         inp_frm = tk.Frame(pal, bg=BG_INPUT,
                            highlightthickness=1,
                            highlightbackground=ACCENT_CYAN)
-        inp_frm.pack(fill='x', padx=0, pady=0)
-        tk.Label(inp_frm, text='  ›', bg=BG_INPUT, fg=ACCENT_CYAN,
+        inp_frm.pack(fill='x')
+        tk.Label(inp_frm, text='  ⌨', bg=BG_INPUT, fg=ACCENT_CYAN,
                  font=(MONO, 14)).pack(side='left')
         search_var = tk.StringVar()
         inp = tk.Entry(inp_frm, textvariable=search_var,
                        bg=BG_INPUT, fg=FG_PRIMARY,
                        insertbackground=FG_PRIMARY,
                        relief='flat', bd=0, font=(MONO, 12))
-        inp.pack(side='left', fill='x', expand=True, ipady=8, padx=4)
+        inp.pack(side='left', fill='x', expand=True, ipady=9, padx=4)
         inp.focus_set()
 
-        # Result list
-        listbox = tk.Listbox(pal, bg=BG_CARD, fg=FG_PRIMARY,
-                             font=(MONO, 10), relief='flat', bd=0,
-                             selectbackground=BG_SELECT,
-                             selectforeground=FG_BRIGHT,
-                             activestyle='none',
-                             highlightthickness=0)
-        listbox.pack(fill='both', expand=True, padx=0, pady=0)
+        # Result listbox
+        listbox = tk.Listbox(
+            pal, bg=BG_CARD, fg=FG_PRIMARY,
+            font=(MONO, 10), relief='flat', bd=0,
+            selectbackground=BG_SELECT, selectforeground=FG_BRIGHT,
+            activestyle='none', highlightthickness=0)
+        listbox.pack(fill='both', expand=True)
 
-        hint = tk.Label(pal, text='Enter to navigate  ·  Esc to close',
-                        bg='#060809', fg=FG_DIM, font=(MONO, 8))
+        hint = tk.Label(
+            pal,
+            text='↑ ↓  navigate    Enter  jump    Esc  close    Ctrl+1–9  direct jump',
+            bg='#060809', fg=FG_DIM, font=(MONO, 8))
         hint.pack(fill='x', pady=4)
 
-        # Pre-fill search with quick target bar host
         qt_host = self._qt_var.get().strip() if hasattr(self, '_qt_var') else ''
 
-        all_tools = [(k, lbl, icon) for k, lbl, icon, _ in _NAV_TOOLS]
+        # Build tool index with shortcuts
+        tool_index = []
+        for i, (key, label, icon, group) in enumerate(_NAV_TOOLS):
+            sc = f'Ctrl+{i+1}' if i < 9 else ''
+            tool_index.append((key, label, icon, group, sc))
+
+        # row_keys[i] = tool key string, or None for group header rows
+        row_keys = []
 
         def refresh(*_):
-            q = search_var.get().lower()
+            q = search_var.get().lower().strip()
             listbox.delete(0, 'end')
-            for k, lbl, icon in all_tools:
-                if q in lbl.lower() or q in k.lower():
-                    listbox.insert('end', f'  {icon}  {lbl}')
-            if listbox.size():
-                listbox.selection_set(0)
+            row_keys.clear()
+
+            if q:
+                # Flat filtered list — no group headers
+                for key, label, icon, group, sc in tool_index:
+                    if q not in label.lower() and q not in key.lower():
+                        continue
+                    mark = '●' if key == self._active_key else ' '
+                    sc_str = f'   {sc}' if sc else ''
+                    listbox.insert('end', f'  {mark} {icon}  {label:<20}{sc_str}')
+                    idx = len(row_keys)
+                    if key == self._active_key:
+                        listbox.itemconfig(idx, foreground=ACCENT_CYAN)
+                    row_keys.append(key)
+            else:
+                # Grouped display
+                last_group = None
+                for key, label, icon, group, sc in tool_index:
+                    if group != last_group:
+                        listbox.insert('end', f'  ── {group} ' + '─' * (30 - len(group)))
+                        idx = len(row_keys)
+                        listbox.itemconfig(idx,
+                                           foreground=FG_DIM,
+                                           selectbackground=BG_CARD,
+                                           selectforeground=FG_DIM)
+                        row_keys.append(None)
+                        last_group = group
+
+                    mark = '●' if key == self._active_key else ' '
+                    sc_str = f'   {sc}' if sc else ''
+                    listbox.insert('end', f'  {mark} {icon}  {label:<20}{sc_str}')
+                    idx = len(row_keys)
+                    if key == self._active_key:
+                        listbox.itemconfig(idx, foreground=ACCENT_CYAN)
+                    row_keys.append(key)
+
+            # Select first non-header entry
+            for i, k in enumerate(row_keys):
+                if k is not None:
+                    listbox.selection_set(i)
+                    listbox.see(i)
+                    break
+
+        def get_selected_key():
+            sel = listbox.curselection()
+            if not sel or sel[0] >= len(row_keys):
+                return None
+            return row_keys[sel[0]]  # None if header
 
         def go(event=None):
-            sel = listbox.curselection()
-            if not sel:
+            key = get_selected_key()
+            if not key:
                 return
-            idx = sel[0]
-            key = all_tools[[i for i, (k, lbl, icon) in enumerate(all_tools)
-                              if f'  {icon}  {lbl}' == listbox.get(idx)][0]][0]
             pal.destroy()
             self.navigate_to(key, prefill=qt_host or None)
+
+        def move(delta):
+            cur  = listbox.curselection()
+            pos  = cur[0] if cur else -1
+            next_pos = pos + delta
+            while 0 <= next_pos < len(row_keys) and row_keys[next_pos] is None:
+                next_pos += delta
+            if 0 <= next_pos < len(row_keys) and row_keys[next_pos] is not None:
+                listbox.selection_clear(0, 'end')
+                listbox.selection_set(next_pos)
+                listbox.see(next_pos)
 
         search_var.trace_add('write', refresh)
         listbox.bind('<Double-Button-1>', go)
         pal.bind('<Return>',  go)
         pal.bind('<Escape>',  lambda e: pal.destroy())
-        pal.bind('<Down>',
-                 lambda e: listbox.selection_set(
-                     min(listbox.curselection()[0] + 1, listbox.size()-1)
-                     if listbox.curselection() else 0))
-        pal.bind('<Up>',
-                 lambda e: listbox.selection_set(
-                     max(listbox.curselection()[0] - 1, 0)
-                     if listbox.curselection() else 0))
+        pal.bind('<Down>',    lambda e: move(1))
+        pal.bind('<Up>',      lambda e: move(-1))
 
         refresh()
-
-    # ── Sidebar toggle ────────────────────────────────────────────────────────
-
-    def _toggle_sidebar(self):
-        self._sidebar_open = not self._sidebar_open
-        if self._sidebar_open:
-            self._sidebar_frm.config(width=_SIDEBAR_OPEN)
-            self._sidebar_toggle_lbl.config(text='◀')
-            for btn in self._nav_buttons.values():
-                btn.set_collapsed(False)
-            for lbl, sep, spacer in self._group_headers:
-                spacer.pack(fill='x')
-                lbl.pack(fill='x', padx=4, pady=(2, 0))
-                sep.pack(fill='x', padx=8, pady=(2, 4))
-            self._sidebar_hint.pack()
-        else:
-            self._sidebar_frm.config(width=_SIDEBAR_CLOSED)
-            self._sidebar_toggle_lbl.config(text='▶')
-            for btn in self._nav_buttons.values():
-                btn.set_collapsed(True)
-            for lbl, sep, spacer in self._group_headers:
-                spacer.pack_forget()
-                lbl.pack_forget()
-                sep.pack_forget()
-            self._sidebar_hint.pack_forget()
 
     # ── Menu ──────────────────────────────────────────────────────────────────
 
@@ -579,7 +464,7 @@ class NetProbeApp:
                           activebackground=BG_SELECT, activeforeground=FG_BRIGHT,
                           relief='flat', bd=0)
 
-        def _menu(label, **items_and_cmds):
+        def _menu(label):
             m = tk.Menu(menubar, tearoff=0, bg=BG_INPUT, fg=FG_PRIMARY,
                         activebackground=BG_SELECT, activeforeground=FG_BRIGHT)
             menubar.add_cascade(label=label, menu=m)
@@ -593,7 +478,7 @@ class NetProbeApp:
 
         # Tools
         tm = _menu('Tools')
-        tm.add_command(label='Toggle Sidebar  Ctrl+B', command=self._toggle_sidebar)
+        tm.add_command(label='Command Palette  Ctrl+P', command=self._open_command_palette)
         tm.add_separator()
         tm.add_command(label='Check Dependencies',  command=self._check_deps)
         tm.add_command(label='Network Interfaces',  command=self._show_interfaces)
@@ -1085,7 +970,7 @@ class NetProbeApp:
         win = tk.Toplevel(self.root)
         win.title('Keyboard Shortcuts')
         win.configure(bg=BG_PANEL)
-        win.geometry('380x340')
+        win.geometry('420x320')
         win.grab_set()
         from .widgets import CardFrame
         card = CardFrame(win, title='KEYBOARD SHORTCUTS')
@@ -1096,12 +981,12 @@ class NetProbeApp:
                            font=(MONO, 9, 'bold'))
         text.tag_configure('dim', foreground=FG_DIM)
         shortcuts = [
-            ('Ctrl+1 … Ctrl+9', 'Jump to tool 1–9'),
-            ('Ctrl+B',          'Toggle sidebar'),
-            ('Ctrl+E',          'Export results'),
-            ('Ctrl+W',          'Exit'),
-            ('Right-click log', 'Copy / Clear log'),
-            ('Right-click table', 'Copy row / Copy all / Navigate'),
+            ('Ctrl+P',              'Open command palette (tool navigation)'),
+            ('Ctrl+1 … Ctrl+9',     'Jump directly to tool 1–9'),
+            ('Ctrl+E',              'Export results'),
+            ('Ctrl+W',              'Exit'),
+            ('Right-click log',     'Copy / Clear log'),
+            ('Right-click table',   'Copy row / Copy all / Navigate'),
             ('Click column header', 'Sort by column'),
         ]
         for key, desc in shortcuts:
