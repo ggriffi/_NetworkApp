@@ -422,7 +422,7 @@ class RTTGraph(tk.Frame):
         tk.Label(hdr, text=label, bg=BG_CARD, fg=FG_DIM,
                  font=FONT_TINY_BOLD).pack(side='left')
         self._stat_lbl = tk.Label(hdr, text='', bg=BG_CARD,
-                                  fg=FG_DIM, font=FONTMONO_SM)
+                                  fg=FG_DIM, font=FONT_MONO_SM)
         self._stat_lbl.pack(side='right')
 
         self._cv = tk.Canvas(self, bg=BG_CARD, height=height,

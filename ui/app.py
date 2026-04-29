@@ -188,7 +188,7 @@ class NetProbeApp:
         self.root.option_add('*TCombobox*Listbox.background',       BG_INPUT)
         self.root.option_add('*TCombobox*Listbox.foreground',       FG_PRIMARY)
         self.root.option_add('*TCombobox*Listbox.selectBackground', BG_SELECT)
-        self.root.option_add('*TCombobox*Listbox.font',             FONTMONO_SM)
+        self.root.option_add('*TCombobox*Listbox.font',             FONT_MONO_SM)
         self.root.option_add('*Font', FONT_UI)
 
     # ── Build UI ──────────────────────────────────────────────────────────────
