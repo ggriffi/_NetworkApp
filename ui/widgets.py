@@ -1,25 +1,27 @@
 """
-NetProbe Reusable Widgets — Polished
+NetProbe Reusable Widgets
 """
 import tkinter as tk
 from tkinter import ttk
 from .theme import *
 import datetime
+import time as _time
 
 
-def apply_treeview_style(style: ttk.Style):
+def apply_treeview_style(style: ttk.Style, compact: bool = False):
+    rh = 20 if compact else 24
     style.theme_use('clam')
     style.configure('Dark.Treeview',
                     background=TREE_STYLE['background'],
                     foreground=TREE_STYLE['foreground'],
                     fieldbackground=TREE_STYLE['fieldbackground'],
-                    rowheight=24,
+                    rowheight=rh,
                     font=TREE_STYLE['font'])
     style.configure('Dark.Treeview.Heading',
                     background=BG_INPUT,
                     foreground=ACCENT_CYAN,
                     relief='flat',
-                    font=('Segoe UI', 9, 'bold'))
+                    font=(_MONO, 9, 'bold'))
     style.map('Dark.Treeview',
               background=[('selected', BG_SELECT)],
               foreground=[('selected', FG_BRIGHT)])
@@ -94,7 +96,7 @@ class CardFrame(tk.Frame):
             hdr = tk.Frame(self, bg=BG_INPUT, highlightthickness=0)
             hdr.pack(fill='x')
             tk.Label(hdr, text=f'  {title.upper()}', bg=BG_INPUT,
-                     fg=ACCENT_CYAN, font=('Segoe UI', 8, 'bold'),
+                     fg=ACCENT_CYAN, font=FONT_TINY_BOLD,
                      pady=5).pack(side='left')
             if right_text:
                 self._right_lbl = tk.Label(hdr, text=right_text,
@@ -128,19 +130,19 @@ class LabeledEntry(tk.Frame):
 
 
 # ─────────────────────────────────────────────
-# Scrolled Text
+# Scrolled Text  (optional auto-timestamps)
 # ─────────────────────────────────────────────
 
 class ScrolledText(tk.Frame):
-    def __init__(self, parent, **kw):
+    def __init__(self, parent, timestamps: bool = False, **kw):
         super().__init__(parent, bg=BG_CARD)
+        self._timestamps = timestamps
         self.text = tk.Text(self, **{**TEXT_OPTS, **kw})
         vsb = ttk.Scrollbar(self, orient='vertical', command=self.text.yview,
                             style='Dark.Vertical.TScrollbar')
         self.text.configure(yscrollcommand=vsb.set)
         vsb.pack(side='right', fill='y')
         self.text.pack(side='left', fill='both', expand=True)
-        # Right-click context menu
         self._menu = tk.Menu(self.text, tearoff=0, bg=BG_INPUT, fg=FG_PRIMARY,
                              activebackground=BG_SELECT, activeforeground=FG_BRIGHT)
         self._menu.add_command(label='Copy Selection', command=self._copy)
@@ -148,6 +150,8 @@ class ScrolledText(tk.Frame):
         self._menu.add_separator()
         self._menu.add_command(label='Clear Log',      command=self.clear)
         self.text.bind('<Button-3>', self._show_menu)
+        # pre-configure timestamp tag (dim cyan)
+        self.text.tag_configure('_ts', foreground='#2a5a6a', font=(_MONO, 8))
 
     def _show_menu(self, event):
         self._menu.tk_popup(event.x_root, event.y_root)
@@ -165,6 +169,9 @@ class ScrolledText(tk.Frame):
 
     def append(self, text: str, tag: str = ''):
         self.text.configure(state='normal')
+        if self._timestamps and text and text != '\n':
+            ts = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            self.text.insert('end', f'[{ts}] ', '_ts')
         self.text.insert('end', text, tag)
         self.text.see('end')
         self.text.configure(state='disabled')
@@ -184,7 +191,8 @@ class ScrolledText(tk.Frame):
 # ─────────────────────────────────────────────
 
 class DarkTreeview(tk.Frame):
-    """Treeview with dark scrollbars, alternating rows, sortable columns, copy menu"""
+    """Treeview: dark scrollbars, alternating rows, sortable columns, copy + shell-cmd menu."""
+
     def __init__(self, parent, columns, headings, widths=None, **kw):
         super().__init__(parent, bg=BG_CARD)
         self.tree = ttk.Treeview(self, columns=columns, show='headings',
@@ -202,7 +210,6 @@ class DarkTreeview(tk.Frame):
                               command=lambda c=col: self._sort_by(c, False))
             self.tree.column(col, width=width, minwidth=30)
 
-        # Alternating row colors
         self.tree.tag_configure('evenrow', background='#111820')
         self.tree.tag_configure('oddrow',  background=BG_CARD)
 
@@ -212,14 +219,22 @@ class DarkTreeview(tk.Frame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # Right-click copy menu
+        self._shell_cmd_fn = None
         self._menu = tk.Menu(self.tree, tearoff=0, bg=BG_INPUT, fg=FG_PRIMARY,
                              activebackground=BG_SELECT, activeforeground=FG_BRIGHT)
         self._menu.add_command(label='Copy Row',  command=self._copy_row)
         self._menu.add_command(label='Copy All',  command=self._copy_all)
+        self._menu.add_separator()
+        self._menu.add_command(label='Copy as shell command',
+                               command=self._copy_shell, state='disabled')
         self.tree.bind('<Button-3>', self._show_menu)
 
         self._row_count = 0
+
+    def set_shell_cmd_fn(self, fn):
+        """Register fn(values) -> str. Enables 'Copy as shell command' menu item."""
+        self._shell_cmd_fn = fn
+        self._menu.entryconfigure('Copy as shell command', state='normal')
 
     def _show_menu(self, event):
         self._menu.tk_popup(event.x_root, event.y_root)
@@ -238,6 +253,17 @@ class DarkTreeview(tk.Frame):
             lines.append('\t'.join(str(v) for v in vals))
         self.tree.clipboard_clear()
         self.tree.clipboard_append('\n'.join(lines))
+
+    def _copy_shell(self):
+        if not self._shell_cmd_fn:
+            return
+        sel = self.tree.selection()
+        if sel:
+            vals = self.tree.item(sel[0])['values']
+            cmd = self._shell_cmd_fn(vals)
+            if cmd:
+                self.tree.clipboard_clear()
+                self.tree.clipboard_append(cmd)
 
     def _sort_by(self, col, reverse):
         items = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
@@ -278,6 +304,10 @@ class StatusBar(tk.Frame):
                          highlightthickness=1,
                          highlightbackground=BORDER_DIM)
         self._labels = {}
+        self._pulse_job = None
+        self._pulse_state = False
+        self._compact = False
+
         self._add_segment('status',   '● READY', ACCENT_GREEN)
         self._vsep()
         self._add_segment('activity', '',         FG_DIM)
@@ -287,6 +317,16 @@ class StatusBar(tk.Frame):
         # Right side
         self._add_segment('time',  '', FG_DIM,    side='right')
         self._vsep(side='right')
+
+        # Compact density toggle
+        self._density_btn = tk.Label(
+            self, text='⊟', bg='#060809', fg=FG_DIM,
+            font=(_MONO, 10), padx=6, cursor='hand2')
+        self._density_btn.pack(side='right')
+        self._density_btn.bind('<Button-1>', self._toggle_density)
+        Tooltip(self._density_btn, 'Toggle compact row density')
+        self._vsep(side='right')
+
         self._add_segment('admin', self._check_admin(), FG_DIM, side='right')
         self._vsep(side='right')
 
@@ -307,7 +347,7 @@ class StatusBar(tk.Frame):
 
     def _add_segment(self, key, text, color, side='left'):
         lbl = tk.Label(self, text=text, bg='#060809', fg=color,
-                       font=('Courier New', 8), padx=8, pady=3)
+                       font=(_MONO, 8), padx=8, pady=3)
         lbl.pack(side=side)
         self._labels[key] = lbl
 
@@ -320,6 +360,37 @@ class StatusBar(tk.Frame):
     def set_ip(self, text):
         self._labels['ip'].configure(text=text)
 
+    def start_pulse(self, text='RUNNING'):
+        self._pulse_text = text
+        self._pulse_state = False
+        self._do_pulse()
+
+    def stop_pulse(self, text='READY', color=ACCENT_GREEN):
+        if self._pulse_job:
+            self._labels['status'].after_cancel(self._pulse_job)
+            self._pulse_job = None
+        self.set_status(text, color)
+
+    def _do_pulse(self):
+        self._pulse_state = not self._pulse_state
+        dot  = '●' if self._pulse_state else '○'
+        col  = ACCENT_GREEN if self._pulse_state else ACCENT_YELLOW
+        self._labels['status'].configure(
+            text=f'{dot} {self._pulse_text}', fg=col)
+        self._pulse_job = self._labels['status'].after(600, self._do_pulse)
+
+    def _toggle_density(self, _=None):
+        self._compact = not self._compact
+        self._density_btn.configure(
+            fg=ACCENT_CYAN if self._compact else FG_DIM)
+        # Update the global treeview style
+        try:
+            style = ttk.Style()
+            rh = 20 if self._compact else 24
+            style.configure('Dark.Treeview', rowheight=rh)
+        except Exception:
+            pass
+
     def _tick(self):
         self._labels['time'].configure(
             text=f'  {datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")}  ')
@@ -327,11 +398,129 @@ class StatusBar(tk.Frame):
 
 
 # ─────────────────────────────────────────────
-# Mini Graph
+# Canvas RTT Graph  (replaces text sparkline)
+# ─────────────────────────────────────────────
+
+class RTTGraph(tk.Frame):
+    """Canvas-based RTT line graph with threshold bands and filled area."""
+
+    _BANDS = [
+        (0,   50,  '#001a0d'),   # green zone bg
+        (50,  150, '#1a1400'),   # yellow zone bg
+        (150, 300, '#1a0900'),   # orange zone bg
+    ]
+
+    def __init__(self, parent, height=72, max_points=120,
+                 label='RTT GRAPH', **kw):
+        super().__init__(parent, bg=BG_CARD, **kw)
+        self._data      = []
+        self._max_pts   = max_points
+        self._ceil      = 200.0
+
+        hdr = tk.Frame(self, bg=BG_CARD)
+        hdr.pack(fill='x', padx=6, pady=(4, 0))
+        tk.Label(hdr, text=label, bg=BG_CARD, fg=FG_DIM,
+                 font=FONT_TINY_BOLD).pack(side='left')
+        self._stat_lbl = tk.Label(hdr, text='', bg=BG_CARD,
+                                  fg=FG_DIM, font=FONT_MONO_SM)
+        self._stat_lbl.pack(side='right')
+
+        self._cv = tk.Canvas(self, bg=BG_CARD, height=height,
+                             highlightthickness=0, bd=0)
+        self._cv.pack(fill='x', padx=6, pady=(2, 4))
+        self._cv.bind('<Configure>', lambda e: self._draw())
+
+    def push(self, value: float):
+        self._data.append(value)
+        if len(self._data) > self._max_pts:
+            self._data = self._data[-self._max_pts:]
+        valid = [v for v in self._data if v >= 0]
+        if valid:
+            self._ceil = max(max(valid) * 1.15, 50.0)
+            last = valid[-1]
+            avg  = sum(valid) / len(valid)
+            loss = (len(self._data) - len(valid)) / len(self._data) * 100
+            self._stat_lbl.configure(
+                text=(f'last {last:.1f}  avg {avg:.1f}  '
+                      f'min {min(valid):.1f}  max {max(valid):.1f}  '
+                      f'loss {loss:.0f}%  ms'),
+                fg=latency_color(last))
+        else:
+            self._stat_lbl.configure(text='100% loss', fg=ACCENT_RED)
+        self._draw()
+
+    def _draw(self):
+        cv = self._cv
+        cv.delete('all')
+        W = cv.winfo_width()
+        H = cv.winfo_height()
+        if W < 4 or H < 4:
+            return
+        data  = self._data
+        n     = len(data)
+        if n == 0:
+            return
+        scale = max(self._ceil, 1.0)
+
+        def fy(ms):
+            return H - max(2, int(ms / scale * (H - 4))) - 2
+
+        # Threshold band backgrounds
+        for lo, hi, col in self._BANDS:
+            if hi <= scale * 1.05:
+                y0 = fy(min(hi, scale))
+                y1 = min(fy(lo) + 2, H)
+                if y1 > y0:
+                    cv.create_rectangle(0, y0, W, y1, fill=col, outline='')
+
+        # Y-axis guides with labels
+        for mark in [50, 100, 200, 300, 500, 1000]:
+            if mark > scale * 1.1:
+                break
+            y = fy(mark)
+            if 0 <= y <= H:
+                cv.create_line(0, y, W, y, fill=BORDER_DIM, dash=(3, 8))
+                cv.create_text(W - 2, y + 1, text=f'{mark}ms', anchor='se',
+                               fill=FG_DIM, font=(_MONO, 7))
+
+        # Build and draw data segments
+        step = W / max(n, 1)
+        seg  = []
+
+        def flush(seg):
+            if len(seg) < 2:
+                if len(seg) == 1:
+                    x, y, _ = seg[0]
+                    cv.create_oval(x-2, y-2, x+2, y+2,
+                                   fill=ACCENT_GREEN, outline='')
+                return
+            pts    = [(x, y) for x, y, _ in seg]
+            last_v = seg[-1][2]
+            color  = latency_color(last_v)
+            poly   = pts + [(pts[-1][0], H), (pts[0][0], H)]
+            flat_p = [c for pt in poly for c in pt]
+            cv.create_polygon(flat_p, fill='#001a09', outline='')
+            flat_l = [c for pt in pts for c in pt]
+            if len(flat_l) >= 4:
+                cv.create_line(flat_l, fill=color, width=1, smooth=True)
+
+        for i, v in enumerate(data):
+            x = (i + 0.5) * step
+            if v < 0:
+                flush(seg)
+                seg = []
+                cv.create_line(x, H - 6, x, H, fill=ACCENT_RED, width=1)
+            else:
+                seg.append((x, fy(v), v))
+        flush(seg)
+
+
+# ─────────────────────────────────────────────
+# Mini Graph (legacy text sparkline — kept for
+# non-RTT uses like bandwidth throughput)
 # ─────────────────────────────────────────────
 
 class MiniGraph(tk.Frame):
-    """Sparkline RTT graph — Label-based, Python 3.14 safe"""
     BARS = ' ▁▂▃▄▅▆▇█'
 
     def __init__(self, parent, width=200, height=40, max_points=60, **kw):
@@ -342,14 +531,14 @@ class MiniGraph(tk.Frame):
         hdr = tk.Frame(self, bg=BG_CARD)
         hdr.pack(fill='x', padx=6, pady=(4, 0))
         tk.Label(hdr, text='SPARKLINE', bg=BG_CARD, fg=FG_DIM,
-                 font=('Segoe UI', 7, 'bold')).pack(side='left')
+                 font=FONT_TINY_BOLD).pack(side='left')
         self._stat_lbl = tk.Label(hdr, text='', bg=BG_CARD,
-                                  fg=FG_DIM, font=('Courier New', 8))
+                                  fg=FG_DIM, font=(_MONO, 8))
         self._stat_lbl.pack(side='right')
 
         self._spark_lbl = tk.Label(self, text='', bg=BG_CARD,
                                    fg=ACCENT_GREEN,
-                                   font=('Courier New', 13),
+                                   font=(_MONO, 13),
                                    anchor='w', padx=6, pady=3)
         self._spark_lbl.pack(fill='x')
 

@@ -44,16 +44,21 @@ def loss_color(pct: float) -> str:
     return ACCENT_RED
 
 # ─── Fonts ───────────────────────────────────────────────────────
-FONT_MONO_SM  = ('Courier New', 9)
-FONT_MONO     = ('Courier New', 10)
-FONT_MONO_MD  = ('Courier New', 11)
-FONT_MONO_LG  = ('Courier New', 13, 'bold')
-FONT_UI       = ('Segoe UI', 10)         # Windows preferred
-FONT_UI_SM    = ('Segoe UI', 9)
-FONT_UI_BOLD  = ('Segoe UI', 10, 'bold')
-FONT_HEADING  = ('Segoe UI', 12, 'bold')
-FONT_TITLE    = ('Segoe UI', 16, 'bold')
-FONT_LABEL    = ('Segoe UI', 9)
+# Consolas ships with Windows; falls back gracefully on other platforms
+_MONO = 'Consolas'
+
+FONT_MONO_SM   = (_MONO, 9)
+FONT_MONO      = (_MONO, 10)
+FONT_MONO_MD   = (_MONO, 11)
+FONT_MONO_LG   = (_MONO, 13, 'bold')
+FONT_UI        = (_MONO, 10)
+FONT_UI_SM     = (_MONO, 9)
+FONT_UI_BOLD   = (_MONO, 10, 'bold')
+FONT_HEADING   = (_MONO, 12, 'bold')
+FONT_TITLE     = (_MONO, 16, 'bold')
+FONT_LABEL     = (_MONO, 9)
+FONT_TINY      = (_MONO, 7)
+FONT_TINY_BOLD = (_MONO, 7, 'bold')
 
 # ─── Widget defaults ─────────────────────────────────────────────
 ENTRY_OPTS = dict(
@@ -121,5 +126,5 @@ TREE_HEADING_STYLE = {
     'background': BG_INPUT,
     'foreground': ACCENT_CYAN,
     'relief': 'flat',
-    'font': ('Segoe UI', 9, 'bold'),
+    'font': (_MONO, 9, 'bold'),
 }

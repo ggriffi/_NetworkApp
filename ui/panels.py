@@ -11,7 +11,7 @@ import socket
 
 from .theme import *
 from .widgets import (CardFrame, LabeledEntry, ScrolledText,
-                      DarkTreeview, MiniGraph, run_in_thread)
+                      DarkTreeview, MiniGraph, RTTGraph, run_in_thread)
 from core import (PingMonitor, MTRMonitor, traceroute, port_scan, udp_port_scan,
                   dns_lookup, doh_lookup, arp_scan, ping_sweep, get_local_interfaces,
                   BandwidthServer, BandwidthClient, IPerf3Client, find_iperf3,
@@ -33,6 +33,18 @@ def _get_app():
         return _app_instance
     except Exception:
         return None
+
+
+def _pulse_start():
+    app = _get_app()
+    if app and hasattr(app, 'status_bar'):
+        app.status_bar.start_pulse()
+
+
+def _pulse_stop(text='READY'):
+    app = _get_app()
+    if app and hasattr(app, 'status_bar'):
+        app.status_bar.stop_pulse(text)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -133,22 +145,23 @@ class PingPanel(tk.Frame):
                            padx=10, pady=6)
             frm.pack(side='left', padx=2)
             tk.Label(frm, text=label, bg=BG_CARD, fg=FG_DIM,
-                     font=('Segoe UI', 7, 'bold')).pack()
+                     font=(_MONO, 7, 'bold')).pack()
             var = tk.StringVar(value='—')
             self._stat_vars[key] = var
             tk.Label(frm, textvariable=var, bg=BG_CARD, fg=ACCENT_CYAN,
                      font=FONT_MONO_MD).pack()
 
         # Graph
-        graph_card = CardFrame(self, title='RTT GRAPH (last 60 pings)')
+        graph_card = CardFrame(self, title='RTT GRAPH (last 120 pings)')
         graph_card.pack(fill='x', padx=8, pady=4)
-        self._graph = MiniGraph(graph_card.body, height=60)
+        self._graph = RTTGraph(graph_card.body, height=72, max_points=120)
         self._graph.pack(fill='x', expand=True, padx=4, pady=4)
 
         # Log
         log_card = CardFrame(self, title='PING LOG')
         log_card.pack(fill='both', expand=True, padx=8, pady=(0, 8))
-        self._log = ScrolledText(log_card.body, height=14, state='disabled')
+        self._log = ScrolledText(log_card.body, height=14,
+                                 timestamps=True, state='disabled')
         self._log.pack(fill='both', expand=True, padx=4, pady=4)
         self._log.configure_tags(
             ok=dict(foreground=ACCENT_GREEN),
@@ -174,14 +187,16 @@ class PingPanel(tk.Frame):
 
         self._results = []
         self._log.clear()
-        self._log.append(f'PING  {host}  —  started {time.strftime("%H:%M:%S")}\n', 'hdr')
+        self._log.append(f'PING {host} — interval={interval}s\n', 'hdr')
         self._monitor = PingMonitor(host, interval=interval, callback=self._on_result)
         self._monitor.start()
+        _pulse_start()
 
     def _stop(self):
         if self._monitor:
             self._monitor.stop()
             self._log.append('— STOPPED —\n', 'dim')
+        _pulse_stop()
 
     def _on_result(self, r):
         self._results.append(r)
@@ -260,12 +275,16 @@ class TraceroutePanel(tk.Frame):
         self._tree = DarkTreeview(card.body, cols, hdrs, widths)
         self._tree.pack(fill='both', expand=True, padx=4, pady=4)
 
-        # Tag colors
         self._tree.tree.tag_configure('ok',      foreground=ACCENT_GREEN)
         self._tree.tree.tag_configure('warn',     foreground=ACCENT_YELLOW)
         self._tree.tree.tag_configure('bad',      foreground=ACCENT_RED)
         self._tree.tree.tag_configure('timeout',  foreground=FG_DIM)
         self._tree.tree.tag_configure('dest',     foreground=ACCENT_CYAN)
+
+        import platform as _plat
+        _tr_cmd = 'tracert' if _plat.system() == 'Windows' else 'traceroute'
+        self._tree.set_shell_cmd_fn(
+            lambda v: f'ping {v[1]}' if v and len(v) > 1 and v[1] not in ('', '*') else '')
 
     def _start(self, host):
         if not host:
@@ -416,11 +435,12 @@ class MTRPanel(tk.Frame):
             interval = float(self._interval.get())
         except:
             interval = 1.0
-        self._mtr_asn_cache = {}  # ip -> asn string
-        self._mtr_geo_cache = {}  # ip -> geo short string
+        self._mtr_asn_cache = {}
+        self._mtr_geo_cache = {}
         self._mtr = MTRMonitor(host, interval=interval)
         self._mtr.start()
         self._schedule_update()
+        _pulse_start()
 
     def _stop(self):
         if self._mtr:
@@ -428,6 +448,7 @@ class MTRPanel(tk.Frame):
         if self._update_job:
             self.after_cancel(self._update_job)
             self._update_job = None
+        _pulse_stop()
 
     def _schedule_update(self):
         self._refresh()
@@ -562,9 +583,9 @@ class BandwidthPanel(tk.Frame):
         self._mbps_var = tk.StringVar(value='0.00')
         tk.Label(meter_card.body, textvariable=self._mbps_var,
                  bg=BG_CARD, fg=ACCENT_GREEN,
-                 font=('Courier New', 32, 'bold')).pack(side='left', padx=20)
+                 font=(_MONO, 32, 'bold')).pack(side='left', padx=20)
         tk.Label(meter_card.body, text='Mbps', bg=BG_CARD,
-                 fg=FG_DIM, font=('Segoe UI', 14)).pack(side='left')
+                 fg=FG_DIM, font=(_MONO, 14)).pack(side='left')
 
         # Graph
         graph_card = CardFrame(self, title='THROUGHPUT OVER TIME')
@@ -794,6 +815,8 @@ class PortScanPanel(tk.Frame):
         self._tree.tree.tag_configure('closed',       foreground=FG_DIM)
         self._tree.tree.tag_configure('filtered',     foreground=ACCENT_YELLOW)
         self._tree.tree.tag_configure('open|filtered',foreground=ACCENT_CYAN)
+        self._tree.set_shell_cmd_fn(
+            lambda v: (f'nmap -sV -p {v[1]} {v[0]}' if v and len(v) >= 2 else ''))
 
         # Right-click context menu
         ctx_menu = tk.Menu(self._tree.tree, tearoff=0, bg=BG_INPUT, fg=FG_PRIMARY,
@@ -885,10 +908,12 @@ class PortScanPanel(tk.Frame):
 
             self._thread = threading.Thread(target=run, daemon=True)
             self._thread.start()
+            _pulse_start()
         else:
             self._stop_event.set()
             self._scanning = False
             self._scan_btn.configure(text='▶  SCAN', **BUTTON_GREEN_OPTS)
+            _pulse_stop()
 
     def _done_scan(self):
         self._scanning = False
@@ -896,6 +921,7 @@ class PortScanPanel(tk.Frame):
         self._progress_var.set(
             f'Done — {self._open_count} open port(s) across '
             f'{self._hosts_done} host(s)')
+        _pulse_stop('DONE')
 
     def _on_port(self, r):
         if self._stop_event.is_set():
@@ -989,6 +1015,8 @@ class DNSPanel(tk.Frame):
         self._tree.tree.tag_configure('ok',  foreground=ACCENT_GREEN)
         self._tree.tree.tag_configure('err', foreground=ACCENT_RED)
         self._tree.tree.tag_configure('dim', foreground=FG_DIM)
+        self._tree.set_shell_cmd_fn(
+            lambda v: (f'nslookup -type={v[0]} {v[1]}' if v and len(v) >= 2 else ''))
 
         # Raw output
         raw_card = CardFrame(self, title='RAW OUTPUT')
@@ -1812,7 +1840,7 @@ class HTTPProbePanel(tk.Frame):
                            padx=10, pady=6)
             frm.pack(side='left', padx=2)
             tk.Label(frm, text=label, bg=BG_CARD, fg=FG_DIM,
-                     font=('Segoe UI', 7, 'bold')).pack()
+                     font=(_MONO, 7, 'bold')).pack()
             var = tk.StringVar(value='\u2014')
             self._stat_vars[key] = var
             tk.Label(frm, textvariable=var, bg=BG_CARD,
@@ -1930,7 +1958,7 @@ class WHOISPanel(tk.Frame):
         self._out = ScrolledText(out_card.body, height=30, state='disabled')
         self._out.pack(fill='both', expand=True, padx=4, pady=4)
         self._out.configure_tags(
-            hdr=dict(foreground=ACCENT_CYAN, font=('Courier New', 9, 'bold')),
+            hdr=dict(foreground=ACCENT_CYAN, font=(_MONO, 9, 'bold')),
             key=dict(foreground=ACCENT_GREEN),
             val=dict(foreground=FG_PRIMARY),
             dim=dict(foreground=FG_DIM),
@@ -2299,3 +2327,504 @@ class NetstatPanel(tk.Frame):
             app = _get_app()
             if app:
                 app.navigate_to('WHOIS', prefill=ip)
+
+
+# ─────────────────────────────────────────────────────────────────
+# 15. GLOBAL PING / TRACE PANEL
+# Fan-out ping/traceroute from local + optional remote NetProbe nodes.
+# Nodes configured in nodes.json beside the .exe (or project root).
+# ─────────────────────────────────────────────────────────────────
+
+import sys as _sys
+import os as _os
+import queue as _queue
+import json as _json
+import urllib.request as _urllib_req
+import urllib.parse   as _urllib_parse
+
+# Locate nodes.json
+if getattr(_sys, 'frozen', False):
+    _GP_BASE = _os.path.dirname(_sys.executable)
+else:
+    _GP_BASE = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_NODES_FILE = _os.path.join(_GP_BASE, 'nodes.json')
+
+_LOCAL_NODE = {
+    'id': 'local', 'name': 'Local', 'city': '', 'country': '--',
+    'flag': '⬡', 'url': 'self', 'key': '',
+}
+
+# Dot colour mapping (matches server's globalping.js)
+_DOT_COLORS = {
+    'ok':      '#00cc66',
+    'warn':    '#f0c040',
+    'orange':  '#ff8800',
+    'bad':     '#ff4444',
+    'timeout': '#1e2a35',
+}
+
+def _rtt_dot_color(ms: float) -> str:
+    if ms < 0:    return _DOT_COLORS['timeout']
+    if ms < 50:   return _DOT_COLORS['ok']
+    if ms < 150:  return _DOT_COLORS['warn']
+    if ms < 300:  return _DOT_COLORS['orange']
+    return _DOT_COLORS['bad']
+
+
+class _NodeRow(tk.Frame):
+    """One row in the ping grid: flag | name/city | status | avg | loss | last | dots-canvas."""
+
+    MAX_DOTS = 60
+
+    def __init__(self, parent, node: dict):
+        super().__init__(parent, bg=BG_CARD)
+        self._node  = node
+        self._dots  = []   # list of rtt_ms values
+        self._sent  = 0
+        self._recv  = 0
+        self._rtts  = []   # rolling avg buffer
+
+        # ── columns ──────────────────────────────────────────────
+        # Flag
+        tk.Label(self, text=node.get('flag', '◈'), bg=BG_CARD,
+                 fg=ACCENT_CYAN, font=(_MONO, 11), width=2,
+                 anchor='center').pack(side='left', padx=(6, 2))
+
+        # Name / city
+        name_col = tk.Frame(self, bg=BG_CARD, width=160)
+        name_col.pack(side='left', padx=(0, 8))
+        name_col.pack_propagate(False)
+        tk.Label(name_col, text=node['name'], bg=BG_CARD,
+                 fg=FG_PRIMARY, font=FONT_MONO_SM,
+                 anchor='w').pack(fill='x')
+        if node.get('city'):
+            tk.Label(name_col, text=node['city'], bg=BG_CARD,
+                     fg=FG_DIM, font=FONT_TINY,
+                     anchor='w').pack(fill='x')
+
+        # Status dot
+        self._status_lbl = tk.Label(self, text='◌', bg=BG_CARD,
+                                    fg=FG_DIM, font=(_MONO, 11), width=2)
+        self._status_lbl.pack(side='left', padx=4)
+
+        # Stats labels
+        def _stat(width=70):
+            lbl = tk.Label(self, text='—', bg=BG_CARD, fg=FG_DIM,
+                           font=FONT_MONO_SM, width=width//7, anchor='e')
+            lbl.pack(side='left', padx=2)
+            return lbl
+
+        self._avg_lbl  = _stat()
+        self._loss_lbl = _stat(50)
+        self._last_lbl = _stat()
+
+        # Dots canvas (fills remaining)
+        self._cv = tk.Canvas(self, bg=BG_CARD, height=22,
+                             highlightthickness=0, bd=0)
+        self._cv.pack(side='left', fill='x', expand=True, padx=(4, 6))
+        self._cv.bind('<Configure>', lambda e: self._redraw_dots())
+
+    def update_ping(self, rtt_ms: float):
+        self._sent += 1
+        if rtt_ms >= 0:
+            self._recv += 1
+            self._rtts.append(rtt_ms)
+        self._dots.append(rtt_ms)
+        if len(self._dots) > self.MAX_DOTS:
+            self._dots = self._dots[-self.MAX_DOTS:]
+
+        timeout = rtt_ms < 0
+        if timeout:
+            self._status_lbl.configure(text='○', fg=FG_DIM)
+        else:
+            self._status_lbl.configure(text='●', fg=_rtt_dot_color(rtt_ms))
+
+        loss = (self._sent - self._recv) / self._sent * 100 if self._sent else 0
+        avg  = sum(self._rtts) / len(self._rtts) if self._rtts else -1
+
+        last_col = _rtt_dot_color(rtt_ms)
+        avg_col  = _rtt_dot_color(avg)
+        loss_col = (ACCENT_RED if loss >= 20 else
+                    ACCENT_YELLOW if loss > 0 else ACCENT_GREEN)
+
+        self._avg_lbl.configure(
+            text=f'{avg:.1f}ms' if avg >= 0 else '—', fg=avg_col)
+        self._loss_lbl.configure(
+            text=f'{loss:.0f}%', fg=loss_col)
+        self._last_lbl.configure(
+            text=f'{rtt_ms:.1f}ms' if not timeout else 'T/O',
+            fg=last_col if not timeout else FG_DIM)
+        self._redraw_dots()
+
+    def reset(self):
+        self._dots = []
+        self._sent = 0
+        self._recv = 0
+        self._rtts = []
+        self._status_lbl.configure(text='◌', fg=FG_DIM)
+        self._avg_lbl.configure(text='—', fg=FG_DIM)
+        self._loss_lbl.configure(text='—', fg=FG_DIM)
+        self._last_lbl.configure(text='—', fg=FG_DIM)
+        self._cv.delete('all')
+
+    def _redraw_dots(self):
+        cv = self._cv
+        cv.delete('all')
+        W = cv.winfo_width()
+        H = cv.winfo_height()
+        if W < 4 or H < 4 or not self._dots:
+            return
+        dot_w  = 9
+        gap    = 2
+        stride = dot_w + gap
+        n_show = min(len(self._dots), W // stride)
+        dots   = self._dots[-n_show:]
+        x      = W - n_show * stride
+        for rtt in dots:
+            col = _rtt_dot_color(rtt)
+            cv.create_rectangle(x, 2, x + dot_w, H - 2, fill=col, outline='')
+            x += stride
+
+
+class GlobalPingPanel(tk.Frame):
+    """Multi-node ping / traceroute fan-out — local always present, extras from nodes.json."""
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG_PANEL)
+        self._nodes      = []
+        self._node_rows  = {}   # node_id -> _NodeRow
+        self._stop_event = threading.Event()
+        self._q          = _queue.Queue()
+        self._poll_job   = None
+        self._mode       = 'ping'
+        self._running    = False
+
+        self._build()
+        self._load_nodes()
+
+    # ── Build ─────────────────────────────────────────────────────
+
+    def _build(self):
+        # Control bar
+        ctrl = CardFrame(self, title='GLOBAL PING / TRACE')
+        ctrl.pack(fill='x', padx=8, pady=(8, 4))
+
+        row1 = tk.Frame(ctrl.body, bg=BG_CARD)
+        row1.pack(fill='x', padx=8, pady=6)
+
+        tk.Label(row1, text='Target', bg=BG_CARD, fg=FG_DIM,
+                 font=FONT_LABEL).pack(side='left', padx=(0, 4))
+        self._host_var = tk.StringVar()
+        self._host_entry = tk.Entry(row1, textvariable=self._host_var,
+                                    width=30, **ENTRY_OPTS)
+        self._host_entry.pack(side='left', padx=2, ipady=3)
+        self._host_entry.bind('<Return>', lambda e: self._toggle_ping())
+
+        tk.Label(row1, text='Every', bg=BG_CARD, fg=FG_DIM,
+                 font=FONT_LABEL).pack(side='left', padx=(10, 4))
+        self._ivl_var = tk.StringVar(value='2')
+        ivl_cb = ttk.Combobox(row1, textvariable=self._ivl_var,
+                               values=['1', '2', '5', '10', '30'],
+                               width=4, state='readonly',
+                               style='Dark.TCombobox')
+        ivl_cb.pack(side='left', padx=2)
+        tk.Label(row1, text='s', bg=BG_CARD, fg=FG_DIM,
+                 font=FONT_LABEL).pack(side='left', padx=(0, 8))
+
+        self._ping_btn = tk.Button(row1, text='▶  Ping All',
+                                   **BUTTON_GREEN_OPTS,
+                                   command=self._toggle_ping)
+        self._ping_btn.pack(side='left', padx=4)
+
+        self._trace_btn = tk.Button(row1, text='⇢  Trace All',
+                                    **BUTTON_OPTS,
+                                    command=self._start_trace)
+        self._trace_btn.pack(side='left', padx=4)
+
+        # Node info row
+        row2 = tk.Frame(ctrl.body, bg=BG_CARD)
+        row2.pack(fill='x', padx=8, pady=(0, 6))
+        self._node_info_lbl = tk.Label(row2, text='', bg=BG_CARD,
+                                        fg=FG_DIM, font=FONT_LABEL)
+        self._node_info_lbl.pack(side='left')
+        tk.Button(row2, text='⟳ Reload nodes.json', **BUTTON_OPTS,
+                  command=self._load_nodes).pack(side='left', padx=8)
+        tk.Label(row2,
+                 text='Add nodes.json beside the .exe for remote locations',
+                 bg=BG_CARD, fg=FG_DIM, font=FONT_TINY).pack(side='left')
+
+        # Ping grid card
+        self._grid_card = CardFrame(self, title='PING GRID')
+        self._grid_card.pack(fill='both', expand=True, padx=8, pady=4)
+
+        # Column headers
+        hdr = tk.Frame(self._grid_card.body, bg=BG_INPUT)
+        hdr.pack(fill='x', padx=0, pady=0)
+
+        def _hdr(text, width=None, anchor='e'):
+            kw = dict(bg=BG_INPUT, fg=ACCENT_CYAN,
+                      font=FONT_TINY_BOLD, anchor=anchor, pady=3)
+            if width:
+                kw['width'] = width
+            lbl = tk.Label(hdr, text=text, **kw)
+            lbl.pack(side='left', padx=2)
+
+        _hdr('', width=2)           # flag
+        _hdr('NODE', width=23, anchor='w')
+        _hdr('', width=2)           # status
+        _hdr('AVG', width=8)
+        _hdr('LOSS', width=6)
+        _hdr('LAST', width=8)
+        _hdr('HISTORY', anchor='w')
+
+        tk.Frame(self._grid_card.body, bg=BORDER_DIM, height=1).pack(fill='x')
+
+        # Scrollable node rows
+        self._rows_frame = tk.Frame(self._grid_card.body, bg=BG_CARD)
+        self._rows_frame.pack(fill='both', expand=True)
+
+        # Trace results (hidden until trace mode)
+        self._trace_card = CardFrame(self, title='TRACE RESULTS')
+
+    # ── Nodes ─────────────────────────────────────────────────────
+
+    def _load_nodes(self):
+        nodes = [_LOCAL_NODE.copy()]
+        try:
+            if _os.path.isfile(_NODES_FILE):
+                with open(_NODES_FILE, encoding='utf-8') as f:
+                    extra = _json.load(f)
+                nodes += [n for n in extra if n.get('url') != 'self']
+        except Exception:
+            pass
+        self._nodes = nodes
+        self._node_info_lbl.configure(
+            text=f'{len(nodes)} node(s) loaded'
+                 + (f'  ·  {len(nodes)-1} remote' if len(nodes) > 1 else '  ·  local only'))
+        self._build_rows()
+
+    def _build_rows(self):
+        for w in self._rows_frame.winfo_children():
+            w.destroy()
+        self._node_rows = {}
+        for i, node in enumerate(self._nodes):
+            row = _NodeRow(self._rows_frame, node)
+            bg  = BG_CARD if i % 2 == 0 else '#111820'
+            row.configure(bg=bg)
+            row.pack(fill='x', pady=1)
+            self._node_rows[node['id']] = row
+
+    # ── Ping ──────────────────────────────────────────────────────
+
+    def _toggle_ping(self):
+        if self._running and self._mode == 'ping':
+            self._stop()
+        else:
+            self._start_ping()
+
+    def _start_ping(self):
+        host = self._host_var.get().strip()
+        if not host:
+            self._host_entry.focus()
+            return
+        self._stop()
+        self._mode = 'ping'
+        self._running = True
+
+        # Show ping grid, hide trace
+        self._grid_card.pack(fill='both', expand=True, padx=8, pady=4)
+        self._trace_card.pack_forget()
+
+        for row in self._node_rows.values():
+            row.reset()
+
+        self._ping_btn.configure(text='■  Stop', **BUTTON_RED_OPTS)
+        self._trace_btn.configure(state='disabled')
+        self._stop_event.clear()
+
+        try:
+            interval = max(0.5, float(self._ivl_var.get()))
+        except ValueError:
+            interval = 2.0
+
+        for node in self._nodes:
+            t = threading.Thread(
+                target=self._ping_node_loop,
+                args=(node, host, interval),
+                daemon=True)
+            t.start()
+
+        _pulse_start()
+        self._poll_job = self.after(150, self._poll_queue)
+
+    def _ping_node_loop(self, node: dict, host: str, interval: float):
+        seq = 0
+        while not self._stop_event.is_set():
+            rtt = self._ping_once(node, host, seq)
+            self._q.put(('ping', node['id'], rtt))
+            seq += 1
+            # interruptible sleep
+            deadline = _time.monotonic() + interval
+            while _time.monotonic() < deadline:
+                if self._stop_event.is_set():
+                    return
+                _time.sleep(0.1)
+
+    def _ping_once(self, node: dict, host: str, seq: int) -> float:
+        if node.get('url') == 'self':
+            try:
+                from core.engine import _icmp_ping
+                r = _icmp_ping(host, seq)
+                return r.rtt_ms
+            except Exception:
+                return -1.0
+        # Remote node via HTTP
+        try:
+            params = _urllib_parse.urlencode(
+                {'host': host, 'count': 1, 'interval': 0.1})
+            url = node['url'].rstrip('/') + f'/api/ping?{params}'
+            req = _urllib_req.Request(url)
+            if node.get('key'):
+                req.add_header('X-API-Key', node['key'])
+            with _urllib_req.urlopen(req, timeout=8) as resp:
+                data = _json.loads(resp.read())
+            results = data.get('results', [])
+            last    = results[-1] if results else {}
+            return float(last.get('rtt_ms', -1))
+        except Exception:
+            return -1.0
+
+    # ── Trace ─────────────────────────────────────────────────────
+
+    def _start_trace(self):
+        host = self._host_var.get().strip()
+        if not host:
+            self._host_entry.focus()
+            return
+        self._stop()
+        self._mode = 'trace'
+        self._running = True
+
+        # Show trace card, hide ping grid
+        self._grid_card.pack_forget()
+        self._trace_card.pack(fill='both', expand=True, padx=8, pady=4)
+
+        # Clear and build trace card contents
+        for w in self._trace_card.body.winfo_children():
+            w.destroy()
+
+        self._trace_trees = {}
+        for node in self._nodes:
+            ncard = CardFrame(self._trace_card.body,
+                              title=f'{node.get("flag","◈")} {node["name"]}'
+                                    + (f'  —  {node["city"]}' if node.get("city") else ''))
+            ncard.pack(fill='x', padx=4, pady=4)
+            cols  = ('hop', 'ip', 'hostname', 'rtt1', 'rtt2', 'rtt3', 'loss')
+            hdrs  = ('HOP', 'IP ADDRESS', 'HOSTNAME', 'RTT 1', 'RTT 2', 'RTT 3', 'LOSS%')
+            widths = (45, 130, 200, 75, 75, 75, 60)
+            tree = DarkTreeview(ncard.body, cols, hdrs, widths, height=6)
+            tree.pack(fill='x', padx=4, pady=4)
+            self._trace_trees[node['id']] = tree
+
+        self._ping_btn.configure(state='disabled')
+        self._trace_btn.configure(text='⇢  Tracing…', state='disabled')
+        self._stop_event.clear()
+
+        for node in self._nodes:
+            t = threading.Thread(
+                target=self._trace_node,
+                args=(node, host),
+                daemon=True)
+            t.start()
+
+        _pulse_start()
+        self._poll_job = self.after(150, self._poll_queue)
+
+    def _trace_node(self, node: dict, host: str):
+        if node.get('url') == 'self':
+            try:
+                hops = traceroute(host, max_hops=30,
+                                  callback=lambda h: self._q.put(
+                                      ('hop', node['id'], h)))
+            except Exception:
+                pass
+        else:
+            try:
+                params = _urllib_parse.urlencode({'host': host, 'max_hops': 30})
+                url = node['url'].rstrip('/') + f'/api/traceroute?{params}'
+                req = _urllib_req.Request(url)
+                if node.get('key'):
+                    req.add_header('X-API-Key', node['key'])
+                with _urllib_req.urlopen(req, timeout=120) as resp:
+                    hops = _json.loads(resp.read())
+                for hop in hops:
+                    self._q.put(('hop_dict', node['id'], hop))
+            except Exception:
+                pass
+        self._q.put(('trace_done', node['id'], None))
+
+    # ── Queue poll ────────────────────────────────────────────────
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, node_id, data = self._q.get_nowait()
+                if kind == 'ping':
+                    row = self._node_rows.get(node_id)
+                    if row:
+                        row.update_ping(data)
+                elif kind == 'hop':
+                    tree = self._trace_trees.get(node_id)
+                    if tree:
+                        rtts = getattr(data, 'rtts', [])
+                        while len(rtts) < 3:
+                            rtts.append(-1)
+                        loss = getattr(data, 'loss_pct', 0)
+                        tree.tree.insert('', 'end', values=(
+                            getattr(data, 'hop', ''),
+                            getattr(data, 'ip', '*'),
+                            getattr(data, 'hostname', '')[:36],
+                            f'{rtts[0]:.1f}ms' if rtts[0] >= 0 else '*',
+                            f'{rtts[1]:.1f}ms' if rtts[1] >= 0 else '*',
+                            f'{rtts[2]:.1f}ms' if rtts[2] >= 0 else '*',
+                            f'{loss:.0f}%',
+                        ))
+                elif kind == 'hop_dict':
+                    tree = self._trace_trees.get(node_id)
+                    if tree:
+                        rtts = data.get('rtts', [-1, -1, -1])
+                        while len(rtts) < 3:
+                            rtts.append(-1)
+                        loss = data.get('loss_pct', 0)
+                        tree.tree.insert('', 'end', values=(
+                            data.get('hop', ''),
+                            data.get('ip', '*'),
+                            data.get('hostname', '')[:36],
+                            f'{rtts[0]:.1f}ms' if rtts[0] >= 0 else '*',
+                            f'{rtts[1]:.1f}ms' if rtts[1] >= 0 else '*',
+                            f'{rtts[2]:.1f}ms' if rtts[2] >= 0 else '*',
+                            f'{loss:.0f}%',
+                        ))
+                elif kind == 'trace_done':
+                    pass  # could mark the node card as complete
+        except _queue.Empty:
+            pass
+
+        if self._running:
+            self._poll_job = self.after(150, self._poll_queue)
+
+    # ── Stop ──────────────────────────────────────────────────────
+
+    def _stop(self):
+        self._stop_event.set()
+        self._running = False
+        if self._poll_job:
+            try:
+                self.after_cancel(self._poll_job)
+            except Exception:
+                pass
+            self._poll_job = None
+        self._ping_btn.configure(text='▶  Ping All', **BUTTON_GREEN_OPTS)
+        self._trace_btn.configure(text='⇢  Trace All', **BUTTON_OPTS,
+                                  state='normal')
+        _pulse_stop()

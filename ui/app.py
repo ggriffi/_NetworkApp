@@ -16,7 +16,7 @@ from .panels import (
     PortScanPanel, DNSPanel, ARPPanel,
     PacketCapturePanel, ExternalMonitorPanel,
     SSLPanel, HTTPProbePanel, WHOISPanel, WakeOnLANPanel,
-    NetstatPanel,
+    NetstatPanel, GlobalPingPanel,
 )
 
 OS      = platform.system()
@@ -33,6 +33,7 @@ _NAV_TOOLS = [
     ('PING',        'Ping',        '◈', 'NETWORK'),
     ('TRACEROUTE',  'Traceroute',  '⇢', 'NETWORK'),
     ('MTR',         'MTR',         '⊞', 'NETWORK'),
+    ('GLOBAL PING', 'Global Ping', '⊛', 'NETWORK'),
     ('BANDWIDTH',   'Bandwidth',   '⤢', 'NETWORK'),
     ('PORT SCAN',   'Port Scan',   '⬡', 'DISCOVERY'),
     ('DNS',         'DNS',         '◎', 'DISCOVERY'),
@@ -50,6 +51,7 @@ _PANEL_MAP = {
     'PING':        PingPanel,
     'TRACEROUTE':  TraceroutePanel,
     'MTR':         MTRPanel,
+    'GLOBAL PING': GlobalPingPanel,
     'BANDWIDTH':   BandwidthPanel,
     'PORT SCAN':   PortScanPanel,
     'DNS':         DNSPanel,
@@ -85,7 +87,7 @@ class _NavButton(tk.Frame):
         # Icon
         self._icon_lbl = tk.Label(
             self, text=icon, bg=self._BG, fg=FG_DIM,
-            font=('Courier New', 12), width=2, anchor='center')
+            font=(_MONO, 12), width=2, anchor='center')
         self._icon_lbl.pack(side='left', padx=(6, 3), pady=6)
 
         # Label (hidden when sidebar collapsed)
@@ -196,6 +198,10 @@ class NetProbeApp:
         self._build_title_bar()
         tk.Frame(self.root, bg=BORDER_ACCENT, height=2).pack(fill='x')
 
+        # Quick target bar (global, persistent)
+        self._build_quick_target_bar()
+        tk.Frame(self.root, bg=BORDER_DIM, height=1).pack(fill='x')
+
         # Body: sidebar | divider | content
         body = tk.Frame(self.root, bg=BG_ROOT)
         body.pack(fill='both', expand=True)
@@ -211,9 +217,25 @@ class NetProbeApp:
 
         self._build_sidebar()
 
+        # Breadcrumb strip at top of content area
+        self._breadcrumb_frm = tk.Frame(self._content_frm, bg='#060a0f', height=22)
+        self._breadcrumb_frm.pack(fill='x', side='top')
+        self._breadcrumb_frm.pack_propagate(False)
+        self._breadcrumb_lbl = tk.Label(
+            self._breadcrumb_frm,
+            text='netprobe  ›',
+            bg='#060a0f', fg=FG_DIM,
+            font=(_MONO, 8), anchor='w', padx=10)
+        self._breadcrumb_lbl.pack(fill='x', pady=3)
+        tk.Frame(self._content_frm, bg=BORDER_DIM, height=1).pack(fill='x')
+
+        # Panel container (takes remaining space)
+        self._panel_host = tk.Frame(self._content_frm, bg=BG_ROOT)
+        self._panel_host.pack(fill='both', expand=True)
+
         # Create all panels stacked on top of each other
         for key, PanelClass in _PANEL_MAP.items():
-            p = PanelClass(self._content_frm)
+            p = PanelClass(self._panel_host)
             p.place(relx=0, rely=0, relwidth=1, relheight=1)
             self._panels[key] = p
 
@@ -235,6 +257,7 @@ class NetProbeApp:
         self.root.bind('<Control-e>', lambda e: self._export())
         self.root.bind('<Control-w>', lambda e: self._on_close())
         self.root.bind('<Control-b>', lambda e: self._toggle_sidebar())
+        self.root.bind('<Control-p>', lambda e: self._open_command_palette())
 
         self.navigate_to('PING')
 
@@ -247,13 +270,13 @@ class NetProbeApp:
         left = tk.Frame(bar, bg='#040608')
         left.pack(side='left', padx=8)
         tk.Label(left, text='⬡', bg='#040608', fg=ACCENT_GREEN,
-                 font=('Courier New', 22)).pack(side='left', padx=(4, 6))
+                 font=(_MONO, 22)).pack(side='left', padx=(4, 6))
         name_col = tk.Frame(left, bg='#040608')
         name_col.pack(side='left')
         tk.Label(name_col, text='NetProbe', bg='#040608', fg=ACCENT_CYAN,
-                 font=('Segoe UI', 15, 'bold')).pack(anchor='w')
+                 font=(_MONO, 15, 'bold')).pack(anchor='w')
         tk.Label(name_col, text='Network Analysis Utility',
-                 bg='#040608', fg=FG_DIM, font=('Segoe UI', 8)).pack(anchor='w')
+                 bg='#040608', fg=FG_DIM, font=(_MONO, 8)).pack(anchor='w')
 
         tk.Frame(bar, bg=BORDER_DIM, width=1).pack(side='left', fill='y', pady=8, padx=10)
 
@@ -271,25 +294,77 @@ class NetProbeApp:
                             highlightthickness=1, highlightbackground=BORDER_DIM)
             chip.pack(side='left', padx=4, pady=10)
             tk.Label(chip, text=f' {icon} {val} ', bg='#0d1520',
-                     fg=FG_DIM, font=('Segoe UI', 8)).pack()
+                     fg=FG_DIM, font=(_MONO, 8)).pack()
 
         # Right: version + toggle button
         right = tk.Frame(bar, bg='#040608')
         right.pack(side='right', padx=8)
 
         tk.Label(right, text=f'v{VERSION}', bg='#040608',
-                 fg=FG_DIM, font=('Segoe UI', 8)).pack(anchor='e')
+                 fg=FG_DIM, font=(_MONO, 8)).pack(anchor='e')
         tk.Label(right, text=f'{platform.system()} {platform.release()}',
-                 bg='#040608', fg=FG_DIM, font=('Segoe UI', 8)).pack(anchor='e')
+                 bg='#040608', fg=FG_DIM, font=(_MONO, 8)).pack(anchor='e')
 
         tk.Frame(bar, bg=BORDER_DIM, width=1).pack(side='right', fill='y', pady=8, padx=6)
 
         self._sidebar_toggle_lbl = tk.Label(
             bar, text='◀', bg='#040608', fg=FG_DIM,
-            font=('Segoe UI', 14), cursor='hand2', padx=10)
+            font=(_MONO, 14), cursor='hand2', padx=10)
         self._sidebar_toggle_lbl.pack(side='right', fill='y')
         self._sidebar_toggle_lbl.bind('<Button-1>', lambda e: self._toggle_sidebar())
         Tooltip(self._sidebar_toggle_lbl, 'Toggle sidebar  (Ctrl+B)')
+
+    def _build_quick_target_bar(self):
+        bar = tk.Frame(self.root, bg='#080c12', height=36)
+        bar.pack(fill='x')
+        bar.pack_propagate(False)
+
+        tk.Label(bar, text='›', bg='#080c12', fg=ACCENT_CYAN,
+                 font=(_MONO, 14), padx=8).pack(side='left')
+
+        self._qt_var = tk.StringVar()
+        self._qt_entry = tk.Entry(bar, textvariable=self._qt_var,
+                                  width=32,
+                                  bg='#0d1520', fg=FG_PRIMARY,
+                                  insertbackground=FG_PRIMARY,
+                                  relief='flat', bd=0,
+                                  font=(_MONO, 10),
+                                  highlightthickness=1,
+                                  highlightcolor=BORDER_ACTIVE,
+                                  highlightbackground='#080c12')
+        self._qt_entry.pack(side='left', ipady=4, padx=(0, 6))
+        self._qt_entry.bind('<Return>', lambda e: self._qt_dispatch('PING'))
+
+        # Dispatch shortcut buttons
+        dispatch_tools = [
+            ('Ping',  'PING'),
+            ('Trace', 'TRACEROUTE'),
+            ('DNS',   'DNS'),
+            ('SSL',   'SSL/TLS'),
+            ('Scan',  'PORT SCAN'),
+            ('WHOIS', 'WHOIS'),
+        ]
+        for label, key in dispatch_tools:
+            btn = tk.Button(
+                bar, text=label,
+                bg='#0d1520', fg=FG_DIM,
+                activebackground=BG_HOVER, activeforeground=ACCENT_CYAN,
+                relief='flat', bd=0, font=(_MONO, 9),
+                highlightthickness=1,
+                highlightcolor=BORDER_DIM,
+                highlightbackground='#080c12',
+                padx=8, pady=2, cursor='hand2',
+                command=lambda k=key: self._qt_dispatch(k))
+            btn.pack(side='left', padx=1)
+            Tooltip(btn, f'Send target to {label}  (Ctrl+P for full palette)')
+
+        # Ctrl+P hint on far right
+        tk.Label(bar, text='Ctrl+P  palette', bg='#080c12',
+                 fg=FG_DIM, font=(_MONO, 8), padx=12).pack(side='right')
+
+    def _qt_dispatch(self, key: str):
+        host = self._qt_var.get().strip()
+        self.navigate_to(key, prefill=host if host else None)
 
     def _build_sidebar(self):
         sb = self._sidebar_frm
@@ -323,7 +398,7 @@ class NetProbeApp:
                 grp_lbl = tk.Label(
                     self._nav_inner, text=f'  {group}',
                     bg=BG_PANEL, fg=FG_DIM,
-                    font=('Segoe UI', 7, 'bold'), anchor='w')
+                    font=(_MONO, 7, 'bold'), anchor='w')
                 grp_lbl.pack(fill='x', padx=4, pady=(2, 0))
 
                 sep = tk.Frame(self._nav_inner, bg=BORDER_DIM, height=1)
@@ -344,7 +419,7 @@ class NetProbeApp:
         tk.Frame(hint_frm, bg=BORDER_DIM, height=1).pack(fill='x')
         self._sidebar_hint = tk.Label(
             hint_frm, text='Ctrl+B  toggle sidebar',
-            bg=BG_PANEL, fg=FG_DIM, font=('Segoe UI', 7), pady=4)
+            bg=BG_PANEL, fg=FG_DIM, font=(_MONO, 7), pady=4)
         self._sidebar_hint.pack()
 
     # ── Navigation ────────────────────────────────────────────────────────────
@@ -355,7 +430,6 @@ class NetProbeApp:
         if key not in self._panels:
             return
 
-        # Deactivate old
         if self._active_key and self._active_key in self._nav_buttons:
             self._nav_buttons[self._active_key].set_active(False)
 
@@ -363,10 +437,18 @@ class NetProbeApp:
         self._panels[key].tkraise()
         self._nav_buttons[key].set_active(True)
 
+        label = next((lbl for k, lbl, *_ in _NAV_TOOLS if k == key), key)
+
         if hasattr(self, 'status_bar'):
-            # Find human label
-            label = next((lbl for k, lbl, *_ in _NAV_TOOLS if k == key), key)
             self.status_bar.set_activity(f'  {label}', ACCENT_CYAN)
+
+        # Update breadcrumb
+        if hasattr(self, '_breadcrumb_lbl'):
+            target = prefill or self._qt_var.get().strip() if hasattr(self, '_qt_var') else ''
+            crumb = f'netprobe  ›  {label}'
+            if target:
+                crumb += f'  ›  {target}'
+            self._breadcrumb_lbl.configure(text=crumb)
 
         if prefill:
             p = self._panels[key]
@@ -380,6 +462,90 @@ class NetProbeApp:
                     obj.delete(0, 'end')
                     obj.insert(0, prefill)
                 break
+
+    # ── Command palette (Ctrl+P) ──────────────────────────────────
+
+    def _open_command_palette(self):
+        pal = tk.Toplevel(self.root)
+        pal.title('')
+        pal.configure(bg=BG_PANEL)
+        pal.geometry('480x320')
+        pal.resizable(False, False)
+        pal.transient(self.root)
+        pal.grab_set()
+
+        # Center on root
+        self.root.update_idletasks()
+        rx = self.root.winfo_x() + self.root.winfo_width()  // 2 - 240
+        ry = self.root.winfo_y() + self.root.winfo_height() // 4
+        pal.geometry(f'+{rx}+{ry}')
+
+        # Input strip
+        inp_frm = tk.Frame(pal, bg=BG_INPUT,
+                           highlightthickness=1,
+                           highlightbackground=ACCENT_CYAN)
+        inp_frm.pack(fill='x', padx=0, pady=0)
+        tk.Label(inp_frm, text='  ›', bg=BG_INPUT, fg=ACCENT_CYAN,
+                 font=(_MONO, 14)).pack(side='left')
+        search_var = tk.StringVar()
+        inp = tk.Entry(inp_frm, textvariable=search_var,
+                       bg=BG_INPUT, fg=FG_PRIMARY,
+                       insertbackground=FG_PRIMARY,
+                       relief='flat', bd=0, font=(_MONO, 12))
+        inp.pack(side='left', fill='x', expand=True, ipady=8, padx=4)
+        inp.focus_set()
+
+        # Result list
+        listbox = tk.Listbox(pal, bg=BG_CARD, fg=FG_PRIMARY,
+                             font=(_MONO, 10), relief='flat', bd=0,
+                             selectbackground=BG_SELECT,
+                             selectforeground=FG_BRIGHT,
+                             activestyle='none',
+                             highlightthickness=0)
+        listbox.pack(fill='both', expand=True, padx=0, pady=0)
+
+        hint = tk.Label(pal, text='Enter to navigate  ·  Esc to close',
+                        bg='#060809', fg=FG_DIM, font=(_MONO, 8))
+        hint.pack(fill='x', pady=4)
+
+        # Pre-fill search with quick target bar host
+        qt_host = self._qt_var.get().strip() if hasattr(self, '_qt_var') else ''
+
+        all_tools = [(k, lbl, icon) for k, lbl, icon, _ in _NAV_TOOLS]
+
+        def refresh(*_):
+            q = search_var.get().lower()
+            listbox.delete(0, 'end')
+            for k, lbl, icon in all_tools:
+                if q in lbl.lower() or q in k.lower():
+                    listbox.insert('end', f'  {icon}  {lbl}')
+            if listbox.size():
+                listbox.selection_set(0)
+
+        def go(event=None):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+            key = all_tools[[i for i, (k, lbl, icon) in enumerate(all_tools)
+                              if f'  {icon}  {lbl}' == listbox.get(idx)][0]][0]
+            pal.destroy()
+            self.navigate_to(key, prefill=qt_host or None)
+
+        search_var.trace_add('write', refresh)
+        listbox.bind('<Double-Button-1>', go)
+        pal.bind('<Return>',  go)
+        pal.bind('<Escape>',  lambda e: pal.destroy())
+        pal.bind('<Down>',
+                 lambda e: listbox.selection_set(
+                     min(listbox.curselection()[0] + 1, listbox.size()-1)
+                     if listbox.curselection() else 0))
+        pal.bind('<Up>',
+                 lambda e: listbox.selection_set(
+                     max(listbox.curselection()[0] - 1, 0)
+                     if listbox.curselection() else 0))
+
+        refresh()
 
     # ── Sidebar toggle ────────────────────────────────────────────────────────
 
@@ -850,7 +1016,7 @@ class NetProbeApp:
         text.tag_configure('ok',   foreground=ACCENT_GREEN)
         text.tag_configure('warn', foreground=ACCENT_YELLOW)
         text.tag_configure('hdr',  foreground=ACCENT_CYAN,
-                           font=('Courier New', 9, 'bold'))
+                           font=(_MONO, 9, 'bold'))
 
         deps = [
             ('scapy',       'Packet capture, ARP scanning (L2/L3/L4)'),
@@ -927,7 +1093,7 @@ class NetProbeApp:
         text = tk.Text(card.body, **TEXT_OPTS, height=14)
         text.pack(fill='both', expand=True, padx=6, pady=6)
         text.tag_configure('key', foreground=ACCENT_CYAN,
-                           font=('Courier New', 9, 'bold'))
+                           font=(_MONO, 9, 'bold'))
         text.tag_configure('dim', foreground=FG_DIM)
         shortcuts = [
             ('Ctrl+1 … Ctrl+9', 'Jump to tool 1–9'),
@@ -951,9 +1117,9 @@ class NetProbeApp:
         win.resizable(False, False)
         win.grab_set()
         tk.Label(win, text='⬡', bg=BG_PANEL, fg=ACCENT_GREEN,
-                 font=('Courier New', 36)).pack(pady=(20, 4))
+                 font=(_MONO, 36)).pack(pady=(20, 4))
         tk.Label(win, text='NetProbe', bg=BG_PANEL, fg=ACCENT_CYAN,
-                 font=('Segoe UI', 18, 'bold')).pack()
+                 font=(_MONO, 18, 'bold')).pack()
         tk.Label(win, text=f'v{VERSION}  —  Network Analysis Utility',
                  bg=BG_PANEL, fg=FG_DIM, font=FONT_UI).pack(pady=2)
         tk.Frame(win, bg=BORDER_DIM, height=1).pack(fill='x', padx=40, pady=8)
