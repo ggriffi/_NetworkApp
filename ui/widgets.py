@@ -21,7 +21,7 @@ def apply_treeview_style(style: ttk.Style, compact: bool = False):
                     background=BG_INPUT,
                     foreground=ACCENT_CYAN,
                     relief='flat',
-                    font=(_MONO, 9, 'bold'))
+                    font=(MONO, 9, 'bold'))
     style.map('Dark.Treeview',
               background=[('selected', BG_SELECT)],
               foreground=[('selected', FG_BRIGHT)])
@@ -151,7 +151,7 @@ class ScrolledText(tk.Frame):
         self._menu.add_command(label='Clear Log',      command=self.clear)
         self.text.bind('<Button-3>', self._show_menu)
         # pre-configure timestamp tag (dim cyan)
-        self.text.tag_configure('_ts', foreground='#2a5a6a', font=(_MONO, 8))
+        self.text.tag_configure('_ts', foreground='#2a5a6a', font=(MONO, 8))
 
     def _show_menu(self, event):
         self._menu.tk_popup(event.x_root, event.y_root)
@@ -321,7 +321,7 @@ class StatusBar(tk.Frame):
         # Compact density toggle
         self._density_btn = tk.Label(
             self, text='⊟', bg='#060809', fg=FG_DIM,
-            font=(_MONO, 10), padx=6, cursor='hand2')
+            font=(MONO, 10), padx=6, cursor='hand2')
         self._density_btn.pack(side='right')
         self._density_btn.bind('<Button-1>', self._toggle_density)
         Tooltip(self._density_btn, 'Toggle compact row density')
@@ -347,7 +347,7 @@ class StatusBar(tk.Frame):
 
     def _add_segment(self, key, text, color, side='left'):
         lbl = tk.Label(self, text=text, bg='#060809', fg=color,
-                       font=(_MONO, 8), padx=8, pady=3)
+                       font=(MONO, 8), padx=8, pady=3)
         lbl.pack(side=side)
         self._labels[key] = lbl
 
@@ -422,7 +422,7 @@ class RTTGraph(tk.Frame):
         tk.Label(hdr, text=label, bg=BG_CARD, fg=FG_DIM,
                  font=FONT_TINY_BOLD).pack(side='left')
         self._stat_lbl = tk.Label(hdr, text='', bg=BG_CARD,
-                                  fg=FG_DIM, font=FONT_MONO_SM)
+                                  fg=FG_DIM, font=FONTMONO_SM)
         self._stat_lbl.pack(side='right')
 
         self._cv = tk.Canvas(self, bg=BG_CARD, height=height,
@@ -481,7 +481,7 @@ class RTTGraph(tk.Frame):
             if 0 <= y <= H:
                 cv.create_line(0, y, W, y, fill=BORDER_DIM, dash=(3, 8))
                 cv.create_text(W - 2, y + 1, text=f'{mark}ms', anchor='se',
-                               fill=FG_DIM, font=(_MONO, 7))
+                               fill=FG_DIM, font=(MONO, 7))
 
         # Build and draw data segments
         step = W / max(n, 1)
@@ -533,12 +533,12 @@ class MiniGraph(tk.Frame):
         tk.Label(hdr, text='SPARKLINE', bg=BG_CARD, fg=FG_DIM,
                  font=FONT_TINY_BOLD).pack(side='left')
         self._stat_lbl = tk.Label(hdr, text='', bg=BG_CARD,
-                                  fg=FG_DIM, font=(_MONO, 8))
+                                  fg=FG_DIM, font=(MONO, 8))
         self._stat_lbl.pack(side='right')
 
         self._spark_lbl = tk.Label(self, text='', bg=BG_CARD,
                                    fg=ACCENT_GREEN,
-                                   font=(_MONO, 13),
+                                   font=(MONO, 13),
                                    anchor='w', padx=6, pady=3)
         self._spark_lbl.pack(fill='x')
 

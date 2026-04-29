@@ -145,11 +145,11 @@ class PingPanel(tk.Frame):
                            padx=10, pady=6)
             frm.pack(side='left', padx=2)
             tk.Label(frm, text=label, bg=BG_CARD, fg=FG_DIM,
-                     font=(_MONO, 7, 'bold')).pack()
+                     font=(MONO, 7, 'bold')).pack()
             var = tk.StringVar(value='—')
             self._stat_vars[key] = var
             tk.Label(frm, textvariable=var, bg=BG_CARD, fg=ACCENT_CYAN,
-                     font=FONT_MONO_MD).pack()
+                     font=FONTMONO_MD).pack()
 
         # Graph
         graph_card = CardFrame(self, title='RTT GRAPH (last 120 pings)')
@@ -583,9 +583,9 @@ class BandwidthPanel(tk.Frame):
         self._mbps_var = tk.StringVar(value='0.00')
         tk.Label(meter_card.body, textvariable=self._mbps_var,
                  bg=BG_CARD, fg=ACCENT_GREEN,
-                 font=(_MONO, 32, 'bold')).pack(side='left', padx=20)
+                 font=(MONO, 32, 'bold')).pack(side='left', padx=20)
         tk.Label(meter_card.body, text='Mbps', bg=BG_CARD,
-                 fg=FG_DIM, font=(_MONO, 14)).pack(side='left')
+                 fg=FG_DIM, font=(MONO, 14)).pack(side='left')
 
         # Graph
         graph_card = CardFrame(self, title='THROUGHPUT OVER TIME')
@@ -1654,7 +1654,7 @@ class SSLPanel(tk.Frame):
 
         self._status_var = tk.StringVar(value='')
         self._status_lbl = tk.Label(ctrl, textvariable=self._status_var,
-                                    bg=BG_PANEL, fg=FG_DIM, font=FONT_MONO_SM)
+                                    bg=BG_PANEL, fg=FG_DIM, font=FONTMONO_SM)
         self._status_lbl.pack(side='left', padx=4)
 
         cert_card = CardFrame(self, title='CERTIFICATE INFO')
@@ -1680,7 +1680,7 @@ class SSLPanel(tk.Frame):
                 row=i, column=0, sticky='e', padx=(10, 4), pady=2)
             var = tk.StringVar(value='\u2014')
             lbl = tk.Label(grid, textvariable=var, bg=BG_CARD,
-                           fg=FG_PRIMARY, font=FONT_MONO_SM, anchor='w')
+                           fg=FG_PRIMARY, font=FONTMONO_SM, anchor='w')
             lbl.grid(row=i, column=1, sticky='w', padx=4, pady=2)
             self._fields[key] = (var, lbl)
 
@@ -1826,7 +1826,7 @@ class HTTPProbePanel(tk.Frame):
 
         self._status_var = tk.StringVar(value='')
         self._status_lbl = tk.Label(ctrl, textvariable=self._status_var,
-                                    bg=BG_PANEL, fg=FG_DIM, font=FONT_MONO_SM)
+                                    bg=BG_PANEL, fg=FG_DIM, font=FONTMONO_SM)
         self._status_lbl.pack(side='left', padx=4)
 
         stat_row = tk.Frame(self, bg=BG_PANEL, pady=4)
@@ -1840,11 +1840,11 @@ class HTTPProbePanel(tk.Frame):
                            padx=10, pady=6)
             frm.pack(side='left', padx=2)
             tk.Label(frm, text=label, bg=BG_CARD, fg=FG_DIM,
-                     font=(_MONO, 7, 'bold')).pack()
+                     font=(MONO, 7, 'bold')).pack()
             var = tk.StringVar(value='\u2014')
             self._stat_vars[key] = var
             tk.Label(frm, textvariable=var, bg=BG_CARD,
-                     fg=ACCENT_CYAN, font=FONT_MONO_SM).pack()
+                     fg=ACCENT_CYAN, font=FONTMONO_SM).pack()
 
         redir_card = CardFrame(self, title='REDIRECT CHAIN')
         redir_card.pack(fill='x', padx=8, pady=4)
@@ -1958,7 +1958,7 @@ class WHOISPanel(tk.Frame):
         self._out = ScrolledText(out_card.body, height=30, state='disabled')
         self._out.pack(fill='both', expand=True, padx=4, pady=4)
         self._out.configure_tags(
-            hdr=dict(foreground=ACCENT_CYAN, font=(_MONO, 9, 'bold')),
+            hdr=dict(foreground=ACCENT_CYAN, font=(MONO, 9, 'bold')),
             key=dict(foreground=ACCENT_GREEN),
             val=dict(foreground=FG_PRIMARY),
             dim=dict(foreground=FG_DIM),
@@ -2387,7 +2387,7 @@ class _NodeRow(tk.Frame):
         # ── columns ──────────────────────────────────────────────
         # Flag
         tk.Label(self, text=node.get('flag', '◈'), bg=BG_CARD,
-                 fg=ACCENT_CYAN, font=(_MONO, 11), width=2,
+                 fg=ACCENT_CYAN, font=(MONO, 11), width=2,
                  anchor='center').pack(side='left', padx=(6, 2))
 
         # Name / city
@@ -2395,7 +2395,7 @@ class _NodeRow(tk.Frame):
         name_col.pack(side='left', padx=(0, 8))
         name_col.pack_propagate(False)
         tk.Label(name_col, text=node['name'], bg=BG_CARD,
-                 fg=FG_PRIMARY, font=FONT_MONO_SM,
+                 fg=FG_PRIMARY, font=FONTMONO_SM,
                  anchor='w').pack(fill='x')
         if node.get('city'):
             tk.Label(name_col, text=node['city'], bg=BG_CARD,
@@ -2404,13 +2404,13 @@ class _NodeRow(tk.Frame):
 
         # Status dot
         self._status_lbl = tk.Label(self, text='◌', bg=BG_CARD,
-                                    fg=FG_DIM, font=(_MONO, 11), width=2)
+                                    fg=FG_DIM, font=(MONO, 11), width=2)
         self._status_lbl.pack(side='left', padx=4)
 
         # Stats labels
         def _stat(width=70):
             lbl = tk.Label(self, text='—', bg=BG_CARD, fg=FG_DIM,
-                           font=FONT_MONO_SM, width=width//7, anchor='e')
+                           font=FONTMONO_SM, width=width//7, anchor='e')
             lbl.pack(side='left', padx=2)
             return lbl
 

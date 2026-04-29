@@ -45,7 +45,8 @@ def loss_color(pct: float) -> str:
 
 # ─── Fonts ───────────────────────────────────────────────────────
 # Consolas ships with Windows; falls back gracefully on other platforms
-_MONO = 'Consolas'
+MONO = 'Consolas'
+_MONO = MONO  # alias so both forms resolve
 
 FONT_MONO_SM   = (_MONO, 9)
 FONT_MONO      = (_MONO, 10)
